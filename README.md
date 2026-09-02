@@ -129,6 +129,8 @@ Open standards are used *throughout* the stack, not just at the edges:
 | **OPC UA Web API** (IEC 62541-4, OpenAPI) | The RESTful interface for building custom applications — an OpenAPI representation of the OPC UA Services. |
 | **W3C Web of Things (WoT)** (W3C Recommendation) | Thing Descriptions that declaratively map non-OPC UA assets into OPC UA. |
 | **MQTT 5.0** (OASIS) | The messaging transport, with TLS and authentication. MQTT v5 features (Correlation Data, Response Topic, Message Expiry) carry the request/response correlation for OPC UA Actions. |
+| **EN 18222** (CEN/CENELEC) | Digital Product Passport data model and unique identifiers — the structure of the DPPs that UA Data Processor generates and stores in the UA Cloud Library. |
+| **EN 18223** (CEN/CENELEC) | Digital Product Passport system architecture and data exchange — how DPPs are stored and retrieved by downstream consumers (customer, recycler, regulator) over the Cloud Library's REST API. |
 | **Kubernetes** (CNCF) | The deployment and operations model. |
 
 Because these are *published specifications* rather than product features, any
@@ -979,6 +981,10 @@ structured, machine-readable record of what a product *is* and what it cost the
 environment to make — its material composition, its carbon footprint, and its
 end-of-life characteristics — which the EU's Ecodesign for Sustainable Products
 Regulation progressively makes mandatory for products placed on the EU market.
+The DPP itself is specified by **EN 18222** (data model and unique
+identifiers) and **EN 18223** (system architecture and data exchange), the
+CEN/CENELEC standards that underpin the regulation — see
+[Interoperability Through Open Standards](#interoperability-through-open-standards).
 
 Because a DPP is exactly the kind of structured, versioned, semantically
 described artefact that OPC UA Information Models already express, the Cloud
