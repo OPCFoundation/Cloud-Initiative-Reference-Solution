@@ -38,7 +38,15 @@ data:
       flush_interval = "5s"
       flush_jitter = "0s"
       logfile = ""
-      omit_hostname = false
+      # Do NOT tag every point with the Telegraf pod name. "host" is part of the
+      # InfluxDB series key, and the pod name changes on every rollout, so leaving
+      # this false forks a brand new series for ALL telemetry each time the pod is
+      # replaced. That inflates series cardinality for no benefit and, worse, makes
+      # last() return one row per historical pod unless the query groups them away,
+      # so a panel can silently show a stale value from a retired pod's series.
+      # The pod name is not a stable identity here - there is exactly one Telegraf
+      # instance - so the tag carries no information worth keeping.
+      omit_hostname = true
 
     ##################################################################################
     # MQTT â†’ consume OPC UA PubSub JSON data messages and parse it on ingest (json_v2)
