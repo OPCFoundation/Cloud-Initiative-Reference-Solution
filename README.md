@@ -193,13 +193,16 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | **ua-cloudcommander** | `edge` | `ghcr.io/opcfoundation/ua-cloudcommander:main` | — |
 | **mes**, **assembly**, **test**, **packaging** | `munich` | `ghcr.io/digitaltwinconsortium/manufacturingontologies:main` | 4840 (each) |
 | **modbus-simulator** | `munich` | `python:3.12-slim` | 502 (Modbus TCP) |
-| **mosquitto** | `cloud` | `eclipse-mosquitto:2.0.18` | 8883 (MQTT/TLS) |
-| **mqtt-explorer** | `cloud` | `smeagolworms4/mqtt-explorer:latest` | **4000 (UI)** |
-| **telegraf** | `cloud` | `telegraf:1.37-alpine` | — |
-| **influxdb** | `cloud` | `influxdb:2.7` | **8086 (UI/API)** |
-| **grafana** | `cloud` | `grafana/grafana:11.2.0` | **3000 (UI)** |
+| **mosquitto** | `cloud` | `eclipse-mosquitto:2.1.2-alpine` | 8883 (MQTT/TLS) |
+| **mqtt-explorer** | `cloud` | `smeagolworms4/mqtt-explorer:browser-1.0.3` | **4000 (UI)** |
+| **telegraf** | `cloud` | `telegraf:1.39-alpine` | — |
+| **influxdb** | `cloud` | `influxdb:2.9` | **8086 (UI/API)** |
+| **grafana** | `cloud` | `grafana/grafana:13.1.1` | **3000 (UI)** |
 | **ua-cloudaction** | `cloud` | `ghcr.io/opcfoundation/ua-cloudaction:main` | **8082 (UI/Web API)** |
-| **portainer** | `cloud` | `portainer/portainer-ce:2.21.4` | **9443 (HTTPS UI)**, 9000, 8000 |
+| **ua-cloudlibrary** | `cloud` | `ghcr.io/opcfoundation/ua-cloudlibrary:latest` | **8083 (UI/REST)** |
+| **cloudlib-postgres** | `cloud` | `postgres:17.6-alpine` | 5432 (ClusterIP only) |
+| **ua-dataprocessor** | `cloud` | `ghcr.io/opcfoundation/ua-dataprocessor:main` | — |
+| **portainer** | `cloud` | `portainer/portainer-ce:2.44.0` | **9443 (HTTPS UI)**, 9000, 8000 |
 
 **What each component does**
 
@@ -224,16 +227,21 @@ end-to-end pipeline from industrial protocols to a time-series database.
   and `metadata` messages. Configured via `mosquitto-conf` with a TLS listener on
   8883 and username/password authentication (`allow_anonymous false`) using the
   `IOT_USERNAME` / `IOT_PASSWORD` supplied at apply time.
+- **mqtt-explorer** — *MQTT Explorer*, a browser-based client for inspecting the
+  broker: browse the live topic tree, read the OPC UA PubSub payloads on `data/#`
+  and `metadata`, and publish messages by hand. The broker connection is
+  pre-seeded, so it connects with one click. ⚠️ It has **no authentication of its
+  own** — see *Inspecting the Broker with MQTT Explorer*.
 - **telegraf** — *Telegraf* agent that consumes the MQTT PubSub messages, parses them
   with the `json_v2` parser (from the `telegraf-conf` ConfigMap), and writes them to
   InfluxDB as the `opcua_pubsub` (data) and `opcua_metadata` (metadata) measurements.
-- **influxdb** — *InfluxDB 2.7* time-series database storing the telemetry.
+- **influxdb** — *InfluxDB 2.x* time-series database storing the telemetry.
   Initialized with org `iot`, bucket `mqtt`, and an admin user set to your
   `IOT_USERNAME`. Includes a web UI (Data Explorer / dashboards).
 - **grafana** — *Grafana* dashboarding & alerting UI with a **pre-provisioned
   InfluxDB data source** (Flux, org `iot`, bucket `mqtt`) and three **pre-provisioned
-  dashboards** ("Production Line OEE" and "Modbus Simulator") — see
-  *Pre-Provisioned Grafana Dashboards*.
+  dashboards** ("Production Line OEE", "Modbus Simulator" and "UA Cloud Publisher
+  Diagnostics") — see *Pre-Provisioned Grafana Dashboards*.
 - **ua-cloudaction** — OPC Foundation *UA Cloud Action*, the command & control
   **Requestor**. Polls a configured InfluxDB field and, when it crosses a threshold,
   publishes a `ua-action-request` (MethodCall) to the `commands` topic for Cloud
