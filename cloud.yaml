@@ -3124,3 +3124,278 @@ spec:
     - name: http
       port: 8082
       targetPort: 8080
+---
+# ---------------------------------------------------------------------------
+# PostgreSQL - backing store for the UA Cloud Library
+#
+# The Cloud Library keeps BOTH its relational data and the uploaded nodeset
+# files in PostgreSQL (there is no separate blob store), so this database is
+# the single source of truth for everything you upload. It is therefore backed
+# by a hostPath volume like InfluxDB, and uses the same Recreate strategy: a
+# single-writer database on a hostPath cannot tolerate two pods holding the
+# same data directory during a rolling update.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudlib-postgres-auth
+  namespace: cloud
+type: Opaque
+stringData:
+  POSTGRES_DB: "uacloudlib"
+  POSTGRES_USER: "${IOT_USERNAME}"
+  POSTGRES_PASSWORD: "${IOT_PASSWORD}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudlib-postgres
+  namespace: cloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: cloudlib-postgres
+  template:
+    metadata:
+      labels:
+        app: cloudlib-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17.6-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: cloudlib-postgres-auth
+          env:
+            # The official image refuses to initialise into a non-empty directory
+            # such as a hostPath root that already contains lost+found, so keep the
+            # cluster in a dedicated subdirectory.
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: "data"
+          hostPath:
+            path: "/cloudlib-postgres"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudlib-postgres
+  namespace: cloud
+spec:
+  # ClusterIP: the database is only ever reached from inside the cluster.
+  # Do NOT change this to LoadBalancer - it would expose PostgreSQL on the
+  # node IP with a credential that is shared with the rest of the demo.
+  type: ClusterIP
+  selector:
+    app: cloudlib-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+# ---------------------------------------------------------------------------
+# UA Cloud Library - a self-hosted instance of the OPC Foundation's store of
+# OPC UA Information Models (https://uacloudlibrary.opcfoundation.org).
+#
+# PURPOSE HERE: this instance is the store for EU DIGITAL PRODUCT PASSPORTS.
+# UA Data Processor computes a Product Carbon Footprint and a Battery Passport
+# from live production telemetry and publishes them here as OPC UA Information
+# Models, one per product; the Cloud Library provides the storage, versioning,
+# search and REST retrieval that a passport registry needs.
+#
+# Running it locally additionally keeps passports and proprietary models on your
+# own infrastructure, and removes the dependency on the public internet.
+#
+# EMAIL VERIFICATION IS DISABLED. The server enables it only when an email
+# sender API key is present:
+#     options.SignIn.RequireConfirmedAccount =
+#         !string.IsNullOrEmpty(Configuration["EmailSenderAPIKey"])
+# so deliberately NOT setting EmailSenderAPIKey below lets newly registered
+# users sign in immediately, with no outbound mail server. The consequence is
+# that self-registration is open to anyone who can reach the UI, so keep this
+# instance on a trusted network. See the security section of the README.
+#
+# ARM64 NOTE: the image is multi-arch (linux/amd64 + linux/arm64) as of 1.1.34,
+# so it runs on the Raspberry Pi. Tags 1.1.33 and earlier are amd64-only and
+# fail with "exec format error" on arm64.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ua-cloudlibrary
+  namespace: cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ua-cloudlibrary
+  template:
+    metadata:
+      labels:
+        app: ua-cloudlibrary
+    spec:
+      initContainers:
+        # Entity Framework applies its migrations at startup and simply throws if
+        # the database is not accepting connections yet, so wait for PostgreSQL
+        # rather than relying on CrashLoopBackOff to retry.
+        - name: wait-for-postgres
+          image: busybox:1.38
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - "until nc -z cloudlib-postgres 5432; do echo waiting for postgres; sleep 5; done"
+      containers:
+        - name: ua-cloudlibrary
+          image: ghcr.io/opcfoundation/ua-cloudlibrary:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ASPNETCORE_HTTP_PORTS
+              value: "8080"
+            # Npgsql connection string. The key name must match exactly, as the
+            # server reads ConnectionStrings:CloudLibraryPostgreSQL and throws a
+            # descriptive InvalidOperationException when it is missing.
+            - name: ConnectionStrings__CloudLibraryPostgreSQL
+              value: "Host=cloudlib-postgres;Port=5432;Database=uacloudlib;Username=${IOT_USERNAME};Password=${IOT_PASSWORD}"
+            # Credentials for the Cloud Library's own REST/GraphQL API. These are
+            # what UA Data Processor authenticates with below.
+            - name: ServiceUsername
+              value: "${IOT_USERNAME}"
+            - name: ServicePassword
+              value: "${IOT_PASSWORD}"
+            # EmailSenderAPIKey is intentionally NOT set - see the note above.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ua-cloudlibrary
+  namespace: cloud
+spec:
+  type: LoadBalancer
+  selector:
+    app: ua-cloudlibrary
+  ports:
+    - name: http
+      port: 8083
+      targetPort: 8080
+---
+# ---------------------------------------------------------------------------
+# UA Data Processor - calculates a Product Carbon Footprint (PCF) and a Digital
+# Battery Passport from the OPC UA telemetry produced by the simulated
+# production line, and publishes the results as OPC UA Information Models into
+# the UA Cloud Library above, which acts as the Digital Product Passport store.
+#
+# The processor picks its historian automatically: when INFLUX_TOKEN is set it
+# reads from InfluxDB, otherwise it falls back to Azure Data Explorer. Setting
+# the token below is therefore what configures it for InfluxDB.
+#
+# It reads the same two measurements the Grafana dashboards use, joining
+# telemetry to metadata on the shared datasetWriterId tag:
+#   opcua_pubsub   - the OPC UA PubSub telemetry
+#   opcua_metadata - the matching metadata, carrying the DataSetName in metaName
+#
+# NOTE: when running against InfluxDB the processor only evaluates the MUNICH
+# production line, because that is the only line this reference solution
+# simulates. The Seattle line exists in the Azure Data Explorer variant only.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ua-dataprocessor
+  namespace: cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ua-dataprocessor
+  template:
+    metadata:
+      labels:
+        app: ua-dataprocessor
+    spec:
+      initContainers:
+        - name: wait-for-influxdb
+          image: busybox:1.38
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - "until nc -z influxdb 8086; do echo waiting for influxdb; sleep 5; done"
+      containers:
+        - name: ua-dataprocessor
+          image: ghcr.io/opcfoundation/ua-dataprocessor:main
+          imagePullPolicy: IfNotPresent
+          env:
+            # --- InfluxDB (setting INFLUX_TOKEN selects InfluxDB over ADX) ---
+            - name: INFLUX_URL
+              value: "http://influxdb.cloud.svc.cluster.local:8086"
+            - name: INFLUX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUX_TOKEN
+            - name: INFLUX_ORG
+              value: "iot"
+            - name: INFLUX_BUCKET
+              value: "mqtt"
+            - name: INFLUX_MEASUREMENT
+              value: "opcua_pubsub"
+            - name: INFLUX_METADATA_MEASUREMENT
+              value: "opcua_metadata"
+            # Queries that scan several days of data comfortably exceed the
+            # client's 10s default, which surfaces as a TaskCanceledException.
+            - name: INFLUX_TIMEOUT_SECONDS
+              value: "120"
+            # --- UA Cloud Library (where the resulting models are published) ---
+            - name: UA_CLOUD_LIBRARY_URL
+              value: "http://ua-cloudlibrary.cloud.svc.cluster.local:8083"
+            - name: UA_CLOUD_LIBRARY_USERNAME
+              value: "${IOT_USERNAME}"
+            - name: UA_CLOUD_LIBRARY_PASSWORD
+              value: "${IOT_PASSWORD}"
+            # --- WattTime (optional) ---
+            # Without credentials the carbon-intensity lookup simply returns no
+            # data and the PCF calculation is skipped; the pod stays healthy.
+            # Sign up at https://watttime.org and add your credentials here to
+            # enable real grid carbon intensity for the production line location.
+            # - name: WATTTIME_USER
+            #   value: "<your WattTime user>"
+            # - name: WATTTIME_PASSWORD
+            #   value: "<your WattTime password>"

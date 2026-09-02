@@ -34,6 +34,9 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - ["Your Portainer instance timed out for security purposes"](#your-portainer-instance-timed-out-for-security-purposes)
   - [Single Cluster vs. Split Edge/Cloud Deployment](#single-cluster-vs-split-edgecloud-deployment)
 - [Inspecting the Broker with MQTT Explorer](#inspecting-the-broker-with-mqtt-explorer)
+- [Self-Hosted UA Cloud Library](#self-hosted-ua-cloud-library)
+  - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
+- [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
   - [Production Shifts and Choosing the Grafana Time Range](#production-shifts-and-choosing-the-grafana-time-range)
@@ -236,6 +239,19 @@ end-to-end pipeline from industrial protocols to a time-series database.
   UI and the [OPC UA Web API](./tutorial-building-custom-apps.md#accessing-the-opc-ua-web-api-ua-cloud-action).
 - **portainer** — *Portainer CE*, a web UI to manage the K3s cluster (workloads,
   logs, shells, events). Runs under a `cluster-admin`-bound ServiceAccount.
+- **ua-cloudlibrary** — a **self-hosted [UA Cloud Library](https://github.com/OPCFoundation/UA-CloudLibrary)**,
+  the OPC Foundation's store of OPC UA Information Models. Running it locally
+  means models can be resolved without reaching out to the public
+  [uacloudlibrary.opcfoundation.org](https://uacloudlibrary.opcfoundation.org),
+  which matters for air-gapped installations or when storing private models. It can also be used to store EU Digital Product Passports, which is the use case leveraged here. It has a Web UI plus a REST API.
+- **cloudlib-postgres** — *PostgreSQL*, the Cloud Library's backing store. It
+  holds **both** the relational data and the uploaded nodeset files (there is no
+  separate blob store), so it is the single source of truth for everything you
+  upload. `ClusterIP` only — never exposed on the node.
+- **ua-dataprocessor** — *UA Data Processor*, a headless worker that reads the
+  OPC UA telemetry back out of InfluxDB and calculates a **Product Carbon
+  Footprint (PCF)** and a **Digital Battery Passport**, publishing the results as
+  OPC UA Information Models into the Cloud Library above.
 
 **Configuration resources**
 
@@ -250,6 +266,7 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | `grafana-datasources`, `grafana-dashboard-provider`, `grafana-dashboards` | ConfigMaps | Provision the InfluxDB data source and the three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*). |
 | `opcua-model-importer` | ConfigMap | Importer script for [loading OPC UA Information Models](./tutorial-import-information-model.md) from the UA Cloud Library. |
 | `portainer-sa-clusteradmin` / `portainer-crb-clusteradmin` | ServiceAccount / ClusterRoleBinding | Grant Portainer in-cluster access to the K3s API server. |
+| `cloudlib-postgres-auth` | Secret | PostgreSQL database name, user and password for the UA Cloud Library. Reuses `${IOT_USERNAME}` / `${IOT_PASSWORD}`. |
 
 **Data flow**
 
@@ -405,6 +422,7 @@ Related OPC UA telemetry persistence paths are also mapped as `hostPath` volumes
 | `/mosquitto` | Mosquitto | Broker persistence database (`mosquitto.db`: retained messages and queued messages for persistent sessions). |
 | `/portainer` | Portainer | Portainer database, users, and settings. |
 | `/grafana` | Grafana | Grafana database, users, and user-created dashboards. |
+| `/cloudlib-postgres` | UA Cloud Library (PostgreSQL) | The Cloud Library's entire state: user accounts **and** every uploaded OPC UA nodeset. This directory is the only thing to back up — and deleting it discards every model you uploaded. |
 
 > **Note:** Keep the `INFLUX_TOKEN` safe, to read the telemetry stored in InfluxDB in backup scenarios.
 >
@@ -518,14 +536,16 @@ To start genuinely from scratch — new certificates, empty database, fresh admi
 accounts — also delete the host directories:
 
 ```bash
-sudo rm -rf /mosquitto /influxdb2 /portainer /grafana
+sudo rm -rf /mosquitto /influxdb2 /portainer /grafana /cloudlib-postgres
 sudo rm -rf /translator /publisher /commander /productionline
 ```
 
 > ⚠️ This is irreversible. It destroys all recorded telemetry, the InfluxDB
-> admin token, the Mosquitto CA and password file, and **every OPC UA
+> admin token, the Mosquitto CA and password file, **every OPC UA
 > certificate and trust list** — the stations, Publisher, Translator and
-> Commander all mint new identities and re-establish trust on the next start.
+> Commander all mint new identities and re-establish trust on the next start —
+> and **every nodeset uploaded to the UA Cloud Library, together with its user
+> accounts**.
 > Save your `INFLUX_TOKEN` first if you still need to read the old data.
 
 ### Remove K3s Itself
@@ -781,6 +801,7 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
 | **UA Cloud Action** | `http://<device-ip>:8082` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | **Web UI for the Mosquitto broker** — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
+| **UA Cloud Library** | `http://<device-ip>:8083` | **Web UI for the self-hosted store of OPC UA Information Models** — browse, search, upload and download nodesets, and explore the REST API. Register an account on first use; see *Self-Hosted UA Cloud Library*. ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
 
 To keep both UIs reachable on the single node,
  **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
@@ -945,6 +966,97 @@ Once connected you will see the live topic tree:
 > ```sh
 > kubectl scale deployment/mqtt-explorer -n cloud --replicas=0
 > ```
+
+## Self-Hosted UA Cloud Library
+
+The [UA Cloud Library](https://github.com/OPCFoundation/UA-CloudLibrary) is the
+OPC Foundation's store of **OPC UA Information Models**, publicly hosted at
+[uacloudlibrary.opcfoundation.org](https://uacloudlibrary.opcfoundation.org).
+
+**In this solution it is used as the store for [EU Digital Product Passports](https://environment.ec.europa.eu/topics/circular-economy/ecodesign-sustainable-products-regulation_en) (DPPs).**
+A Digital Product Passport is a
+structured, machine-readable record of what a product *is* and what it cost the
+environment to make — its material composition, its carbon footprint, and its
+end-of-life characteristics — which the EU's Ecodesign for Sustainable Products
+Regulation progressively makes mandatory for products placed on the EU market.
+
+Because a DPP is exactly the kind of structured, versioned, semantically
+described artefact that OPC UA Information Models already express, the Cloud
+Library works as a DPP repository without modification:
+[UA Data Processor](#ua-data-processor-pcf-and-battery-passport) computes each
+product's carbon footprint and battery passport from live production telemetry
+and **publishes them here as OPC UA Information Models**, one per product. The
+Cloud Library then provides the storage, versioning, search and retrieval that a
+DPP repository needs, and its REST API is how downstream consumers — a
+customer, a recycler, or a regulator — fetch a given product's DPP.
+
+Running your own instance also means DPPs and any proprietary models stay
+**on your own infrastructure** rather than in a public library, and that the
+stack keeps working with no dependency on the public Internet (see the
+air-gapped notes under *Updating the Container Images*).
+
+Browse to `http://<device-ip>:8083`. The UI lets you search and filter the stored
+models, inspect their metadata and namespaces, download them, and upload your
+own. The same data is available programmatically through a REST API.
+
+> ℹ️ **This is a different thing from the model importer.** The
+> [`opcua-model-importer`](./tutorial-import-information-model.md) Job pulls a
+> model *from* a Cloud Library *into* InfluxDB so queries can resolve node
+> metadata. The Cloud Library itself is the *store* — here, the DPP store.
+
+**Storage.** Everything — the relational data *and* the uploaded models — lives
+in the `cloudlib-postgres` PostgreSQL database backed by the hostPath
+`/cloudlib-postgres`. That directory is the
+only thing you need to back up, and removing it (as described under
+*Uninstalling*) discards **every Digital Product Passport** and model you stored.
+
+### Registration and the Disabled Email Verification
+
+The Cloud Library server enables account confirmation only when an email sender
+API key is configured.
+
+[`cloud.yaml`](./cloud.yaml) deliberately **does not set `EmailSenderAPIKey`**, so
+`RequireConfirmedAccount` evaluates to `false` and newly registered users can sign
+in immediately. This is what makes the component usable in this reference deployment or on an
+isolated network, where there is no outbound email service like SendGrid to deliver a
+confirmation link and an unconfirmable account would lock you out of your own
+deployment.
+
+> ⚠️ **The consequence is open self-registration.** Anyone who can reach
+> `:8083` can create a working account without proving they control an email
+> address. That is acceptable for a reference deployment on a trusted network
+> and **not** acceptable on an untrusted one. To restore verification, set
+> `EmailSenderAPIKey` from a public email service like SendGrid (and `RegistrationEmailFrom` / `RegistrationEmailReplyTo`)
+> on the `ua-cloudlibrary` Deployment.
+
+## UA Data Processor (PCF and Battery Passport)
+
+**UA Data Processor** closes the loop between raw telemetry and *sustainability
+reporting*. It reads the OPC UA data back out of InfluxDB and calculates:
+
+- a **Product Carbon Footprint (PCF)** — by correlating each product's serial
+  number across the assembly, test and packaging stations, summing the energy
+  each station consumed while that product was inside it, and multiplying by the
+  grid carbon intensity for the production line's location, and
+- a **Digital Battery Passport** — the end-of-line dimensional and quality data
+  for the produced item.
+
+Together these form the **Digital Product Passport (DPP)** for each item produced. The
+results are published as OPC UA Information Models into the
+[UA Cloud Library](#self-hosted-ua-cloud-library), which acts as the DPP
+store — so the DPP is generated from real production data rather than
+assembled by hand after the fact.
+
+It is a headless worker with no web UI, so watch it with:
+
+```sh
+kubectl logs -f deployment/ua-dataprocessor -n cloud
+```
+
+> ℹ️ **WattTime is optional.** Real grid carbon intensity comes from the
+> [WattTime](https://watttime.org) service. Without `WATTTIME_USER` /
+> `WATTTIME_PASSWORD` the lookup simply returns an average carbon intensity and the Battery Passport still works.
+> Credentials are commented out in [`cloud.yaml`](./cloud.yaml) ready to be filled in.
 
 ## Pre-Provisioned Grafana Dashboards
 
@@ -1113,13 +1225,20 @@ and what to change before an internet-exposed or production deployment.
       |                            [UA Cloud Action] --------+--(reads InfluxDB threshold, publishes commands)--------+   |
       |                                                                                                    [Grafana] -----+ (query token)
       |                                                                                          [Model importer Job] ----+ (writes opcua_model)
-      |  Boundary B: operator <-> web UIs (:8080/:8081/:8082/:8086/:3000/:9443, basic auth)                               |
+      |                                                                                       [UA Data Processor] --------+ (reads telemetry + metadata)
+      |                                                                                                  |
+      |                                                       (publishes PCF / Battery Passport models)  v
+      |                                                                            [UA Cloud Library :8083] --> [PostgreSQL :5432, ClusterIP]
+      |  Boundary B: operator <-> web UIs (:8080/:8081/:8082/:8083/:8086/:3000/:9443, basic auth)                        |
       +----------- Boundary C: node/cluster host (K3s + Portainer cluster-admin, hostPath volumes) -----------------------+
 ```
 
 Key assets: the telemetry data (in transit and at rest in InfluxDB), the shared
 `IOT_USERNAME` / `IOT_PASSWORD` credentials, the `INFLUX_TOKEN`, the UA Cloud
-Library credentials used by the import Job, the broker's private key, the
+Library credentials used by the import Job, the **self-hosted UA Cloud Library's
+PostgreSQL database** (which holds its user accounts and every stored **Digital
+Product Passport** — a regulatory record whose integrity is the point of keeping
+it), the broker's private key, the
 Portainer `cluster-admin` ServiceAccount token (full control of the cluster), and
 the K3s node itself (root of trust for all `hostPath` data).
 
@@ -1127,12 +1246,12 @@ the K3s node itself (root of trust for all `hostPath` data).
 
 | STRIDE category | Representative threats in this stack | Mitigations already in place | Residual risk / gaps |
 |-----------------|--------------------------------------|------------------------------|----------------------|
-| **Spoofing** (identity) | A rogue client impersonates the Publisher or **UA Cloud Commander/Action** to the broker; an attacker impersonates a web UI user (Translator, Publisher, Grafana, UA Cloud Action, or Portainer); a fake OPC UA server feeds the Publisher; a forged `ua-action-request` triggers an OPC UA method; an unauthenticated caller hits the **OPC UA Web API**; anything on the pod network impersonates a Modbus master; **theft of the Publisher's CA key (`/publisher/pki/issuer/private`) lets an attacker mint a trusted certificate for any component.** | MQTT broker requires username/password (`allow_anonymous false`); most web UIs (`:8080/:8081/:8082/:3000/:9443`) require login; the **UA Cloud Action web UI and OPC UA Web API mandate HTTP Basic authentication on every request (no anonymous access)**; OPC UA supports certificate exchange between Publisher/Commander and server. | Single shared credential set across all components (including Grafana/Portainer admin and the Web API); Basic-auth credentials are only as safe as the transport (send over TLS in production); no per-service identities or mutual TLS (mTLS); broker does not authenticate clients by certificate; any client that can publish to `commands` can drive Commander; **the GDS issuer key is a 12-year self-signed CA stored in a PKCS#12 with an empty password on a `hostPath` volume** (see hardening item 8); **MQTT Explorer (`:4000`) has no authentication of its own, so anyone who can reach it can publish to any topic — including `commands`**; **Modbus TCP has no authentication whatsoever by protocol design** — the simulator (and any real Modbus device) trusts every caller. |
-| **Tampering** (integrity) | Modification of telemetry in transit; tampering with `hostPath` config/cert files on the node; editing the ConfigMaps; **altering the imported `opcua_model` data** or the model importer script; a malicious command writing/actuating an OPC UA node via Commander; writing Modbus coils/registers on the simulated device. | MQTT is carried over TLS (8883); config is delivered via Kubernetes ConfigMaps/Secrets; Commander/Action send spec-compliant OPC UA PubSub Action envelopes; the seeded Thing Description and settings are delivered read-only from ConfigMaps. | Telegraf and UA Cloud Action use TLS verification skip (`insecure_skip_verify` / `MQTT_TLS_INSECURE=true`), so a man-in-the-middle with any cert is accepted; `hostPath` volumes (`/influxdb2`, `/translator/*`, `/publisher/*`, `/commander/*`, `/productionline/*`, `/mosquitto`, `/portainer`, `/grafana`) are writable by anyone with node access; no message signing on payloads; Commander performs Writes/MethodCalls with no per-action authorization; **Modbus traffic is plaintext and unauthenticated**, so anything on the pod network can read or write the simulated device's registers. |
-| **Repudiation** (auditability) | An operator changes a device mapping, publish set, Grafana dashboard, or issues a command and denies it; no record of who logged in or who imported a model. | Component logs are written to `hostPath` `logs` directories and pod stdout; Portainer records some cluster events. | No centralized, tamper-evident audit log; shared credentials make actions unattributable to an individual; command/action requests and model imports are not attributably logged; no log shipping or retention policy. |
-| **Information disclosure** (confidentiality) | Sniffing telemetry; reading credentials from the manifest; exposed dashboards (Grafana, Portainer, UA Cloud Action) on the node IP; leaking the **UA Cloud Library credentials** used by the import Job; **reading an OPC UA private key — or the Publisher's CA key — off the node (or off the SSD if the device is removed).** | MQTT is encrypted with TLS; `INFLUX_TOKEN` is stored in a Kubernetes `Secret`; credentials are supplied at apply time (not committed to git). | Credentials (including UA Cloud Library and Grafana/Portainer admin) are injected as plain-text env vars (visible via `kubectl describe`/`exec`); Kubernetes Secrets are base64, not encrypted at rest by default; self-signed broker cert offers encryption but no server-identity assurance; **OPC UA private keys, including the GDS issuer (CA) key, are held unprotected in `Directory` stores on `hostPath` volumes** (see hardening item 8); all UIs are exposed on the node IP with no network policy. |
-| **Denial of service** (availability) | Flooding the broker or web UIs; filling the node disk with telemetry or repeated model imports; a crash loop; a runaway feedback loop from UA Cloud Action; overloading the simulated stations or the Modbus simulator with connections. | Liveness/readiness probes restart unhealthy pods; single-replica deployments recover automatically; the importer is a short-lived Job with `ttlSecondsAfterFinished`; **UA Cloud Action has a built-in rate limiter that bounds how often it actuates**; the Modbus simulator declares CPU/memory `requests`/`limits`. | No rate limiting, quotas, or `resources` requests/limits on most pods; unbounded InfluxDB growth on the local SSD (now including `opcua_model` points); a single node is a single point of failure; the broker persists to `hostPath` (`/mosquitto`), reducing message loss on restart though the single node remains a SPOF; UA Cloud Action's rate limit still needs tuning for your environment. |
-| **Elevation of privilege** (authorization) | Container escape to the node; a compromised pod reading another component's data via shared host paths; using the InfluxDB admin token for full DB control; **abusing Portainer's `cluster-admin` ServiceAccount to take over the whole cluster**; using Commander/Action to reach and control OT devices. | Distinct container images per component; `nodeSelector` pins workloads to Linux; the importer Job uses `restartPolicy: Never`. | Containers run with default (often root) user and no `securityContext`; no `NetworkPolicy` isolation between pods; the InfluxDB token is an all-powerful admin token; **Portainer is bound to `cluster-admin`, so compromising it compromises the cluster**; Commander bridges IT→OT with method-call/write capability and no fine-grained authorization; no RBAC scoping for the workloads. |
+| **Spoofing** (identity) | A rogue client impersonates the Publisher or **UA Cloud Commander/Action** to the broker; an attacker impersonates a web UI user (Translator, Publisher, Grafana, UA Cloud Action, or Portainer); a fake OPC UA server feeds the Publisher; a forged `ua-action-request` triggers an OPC UA method; an unauthenticated caller hits the **OPC UA Web API**; anything on the pod network impersonates a Modbus master; **theft of the Publisher's CA key (`/publisher/pki/issuer/private`) lets an attacker mint a trusted certificate for any component**; **anyone who can reach the UA Cloud Library UI (`:8083`) can self-register a working account and act as a legitimate user.** | MQTT broker requires username/password (`allow_anonymous false`); most web UIs (`:8080/:8081/:8082/:3000/:9443`) require login; the **UA Cloud Action web UI and OPC UA Web API mandate HTTP Basic authentication on every request (no anonymous access)**; OPC UA supports certificate exchange between Publisher/Commander and server; the Cloud Library requires an account to upload, and its API is authenticated with `ServiceUsername`/`ServicePassword`. | Single shared credential set across all components (including Grafana/Portainer admin and the Web API); Basic-auth credentials are only as safe as the transport (send over TLS in production); no per-service identities or mutual TLS (mTLS); broker does not authenticate clients by certificate; any client that can publish to `commands` can drive Commander; **the GDS issuer key is a 12-year self-signed CA stored in a PKCS#12 with an empty password on a `hostPath` volume** (see hardening item 9); **the Cloud Library has email verification disabled (`EmailSenderAPIKey` unset), so self-registration is open and accounts are not tied to a provable identity**; **MQTT Explorer (`:4000`) has no authentication of its own, so anyone who can reach it can publish to any topic — including `commands`**; **Modbus TCP has no authentication whatsoever by protocol design** — the simulator (and any real Modbus device) trusts every caller. |
+| **Tampering** (integrity) | Modification of telemetry in transit; tampering with `hostPath` config/cert files on the node; editing the ConfigMaps; **altering the imported `opcua_model` data** or the model importer script; a malicious command writing/actuating an OPC UA node via Commander; writing Modbus coils/registers on the simulated device; **forging or altering a stored Digital Product Passport** so a product appears to have a lower carbon footprint than it does, or uploading a malicious nodeset that is then trusted as the definition of what a machine reports. | MQTT is carried over TLS (8883); config is delivered via Kubernetes ConfigMaps/Secrets; Commander/Action send spec-compliant OPC UA PubSub Action envelopes; the seeded Thing Description and settings are delivered read-only from ConfigMaps; Cloud Library uploads require an authenticated account. | Telegraf and UA Cloud Action use TLS verification skip (`insecure_skip_verify` / `MQTT_TLS_INSECURE=true`), so a man-in-the-middle with any cert is accepted; `hostPath` volumes (`/influxdb2`, `/cloudlib-postgres`, `/translator/*`, `/publisher/*`, `/commander/*`, `/productionline/*`, `/mosquitto`, `/portainer`, `/grafana`) are writable by anyone with node access; no message signing on payloads; Commander performs Writes/MethodCalls with no per-action authorization; **stored Digital Product Passports are not signed or provenance-checked, and because registration is open any account can upload one, so a passport carries no cryptographic proof of origin**; **PCF and Battery Passport results are published without a signature, so a consumer, recycler or regulator cannot verify they came from this pipeline**; **Modbus traffic is plaintext and unauthenticated**, so anything on the pod network can read or write the simulated device's registers. |
+| **Repudiation** (auditability) | An operator changes a device mapping, publish set, Grafana dashboard, or issues a command and denies it; no record of who logged in or who imported a model; **a user uploads a Digital Product Passport to the Cloud Library and denies it**; **a disputed Product Carbon Footprint cannot be traced back to the inputs it was derived from**, which matters when the passport is presented as a regulatory claim. | Component logs are written to `hostPath` `logs` directories and pod stdout; Portainer records some cluster events; the Cloud Library records the owning account against each upload. | No centralized, tamper-evident audit log; shared credentials make actions unattributable to an individual; command/action requests and model imports are not attributably logged; **Cloud Library accounts are self-registered with unverified email addresses, so the recorded uploader identity is weak evidence**; **UA Data Processor does not retain the telemetry window or carbon-intensity figure behind each PCF, so a passport's figures are not independently reproducible**; no log shipping or retention policy. |
+| **Information disclosure** (confidentiality) | Sniffing telemetry; reading credentials from the manifest; exposed dashboards (Grafana, Portainer, UA Cloud Action) on the node IP; leaking the **UA Cloud Library credentials** used by the import Job; **reading an OPC UA private key — or the Publisher's CA key — off the node (or off the SSD if the device is removed)**; **reading the Cloud Library's PostgreSQL database directly off `/cloudlib-postgres`, which exposes every stored Digital Product Passport and all account password hashes**; **inferring production volumes, energy use and product composition from stored passports.** | MQTT is encrypted with TLS; `INFLUX_TOKEN` is stored in a Kubernetes `Secret`; credentials are supplied at apply time (not committed to git); PostgreSQL is `ClusterIP` only, so it is not reachable from outside the cluster; Cloud Library passwords are stored as ASP.NET Identity hashes, not plaintext. | Credentials (including UA Cloud Library and Grafana/Portainer admin) are injected as plain-text env vars (visible via `kubectl describe`/`exec`); Kubernetes Secrets are base64, not encrypted at rest by default; self-signed broker cert offers encryption but no server-identity assurance; **OPC UA private keys, including the GDS issuer (CA) key, are held unprotected in `Directory` stores on `hostPath` volumes** (see hardening item 9); **the PostgreSQL data directory is an unencrypted `hostPath` and the database password is the shared `IOT_PASSWORD`**; **the Cloud Library is served over plain HTTP, so registration and login credentials cross the network in the clear**; all UIs are exposed on the node IP with no network policy. |
+| **Denial of service** (availability) | Flooding the broker or web UIs; filling the node disk with telemetry or repeated model imports; a crash loop; a runaway feedback loop from UA Cloud Action; overloading the simulated stations or the Modbus simulator with connections; **filling the disk by uploading large or numerous passports/nodesets to the Cloud Library**; **exhausting InfluxDB with the Data Processor's repeated multi-day queries.** | Liveness/readiness probes restart unhealthy pods; single-replica deployments recover automatically; the importer is a short-lived Job with `ttlSecondsAfterFinished`; **UA Cloud Action has a built-in rate limiter that bounds how often it actuates**; the Modbus simulator declares CPU/memory `requests`/`limits`; the Data Processor polls on a fixed interval rather than continuously. | No rate limiting, quotas, or `resources` requests/limits on most pods; unbounded InfluxDB growth on the local SSD (now including `opcua_model` points); **no upload size limit or per-account quota on the Cloud Library, and its PostgreSQL volume has no size cap — filling `/cloudlib-postgres` fills the same disk InfluxDB and the broker rely on**; a single node is a single point of failure; the broker persists to `hostPath` (`/mosquitto`), reducing message loss on restart though the single node remains a SPOF; UA Cloud Action's rate limit still needs tuning for your environment. |
+| **Elevation of privilege** (authorization) | Container escape to the node; a compromised pod reading another component's data via shared host paths; using the InfluxDB admin token for full DB control; **abusing Portainer's `cluster-admin` ServiceAccount to take over the whole cluster**; using Commander/Action to reach and control OT devices; **a self-registered Cloud Library user escalating to administrative rights over the model store**; **a compromised UA Data Processor reusing the admin `INFLUX_TOKEN` it is given.** | Distinct container images per component; `nodeSelector` pins workloads to Linux; the importer Job uses `restartPolicy: Never`; the Cloud Library separates ordinary user accounts from the `ServiceUsername` API account. | Containers run with default (often root) user and no `securityContext`; no `NetworkPolicy` isolation between pods; the InfluxDB token is an all-powerful admin token; **UA Data Processor only ever reads, but is handed the same admin token rather than a read-only one**; **Portainer is bound to `cluster-admin`, so compromising it compromises the cluster**; **the Cloud Library's API account shares the single `IOT_PASSWORD` used everywhere else, so one leaked credential grants model-store write access**; Commander bridges IT→OT with method-call/write capability and no fine-grained authorization; no RBAC scoping for the workloads. |
 
 ### Production Hardening Recommendations
 
@@ -1155,21 +1274,37 @@ deployment. Prioritize the items marked **(High)**.
    client may publish/subscribe to.
 4. **Scope the InfluxDB token (High).** Do not use the all-powerful admin token
    for Telegraf. Create a dedicated write-only token limited to the `mqtt`
-   bucket, and separate read tokens for dashboards.
-5. **Restrict network exposure (High).** Do not expose `LoadBalancer` services
+   bucket, and separate read tokens for dashboards. **UA Data Processor only ever
+   reads**, so give it a read-only token rather than the admin one it currently
+   shares.
+5. **Re-enable Cloud Library email verification and close open registration (High).**
+   The self-hosted UA Cloud Library ships with `EmailSenderAPIKey` unset, which
+   disables account confirmation and lets anyone who can reach `:8083` register a
+   working account (see
+   [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)).
+   For production, set `EmailSenderAPIKey`, `RegistrationEmailFrom` and
+   `RegistrationEmailReplyTo` so accounts are tied to a verified address, front
+   the UI with an authenticating proxy or SSO, and serve it over TLS — today the
+   registration and login forms are submitted over plain HTTP. Also give the
+   Cloud Library API its own `ServiceUsername`/`ServicePassword` instead of
+   reusing the shared `IOT_*` credentials, and give its PostgreSQL database a
+   dedicated password.
+6. **Restrict network exposure (High).** Do not expose `LoadBalancer` services
    directly on the node IP. Front the web UIs with an authenticating reverse
    proxy/ingress, place the broker and database on an internal network only, and
    add Kubernetes **`NetworkPolicy`** rules so pods can only reach the peers they
    need.
-6. **Harden the pods.** Add a `securityContext` (`runAsNonRoot: true`,
+7. **Harden the pods.** Add a `securityContext` (`runAsNonRoot: true`,
    `readOnlyRootFilesystem: true`, drop Linux capabilities,
    `allowPrivilegeEscalation: false`) and set CPU/memory `requests`/`limits` to
    contain resource-exhaustion and blast radius.
-7. **Protect data at rest.** Enable encryption at rest for the node's disk
-   (`/influxdb2` and the other `hostPath` volumes) and for Kubernetes Secrets
-   (e.g. a KMS provider or an encrypted etcd). Replace ad-hoc `hostPath` volumes
-   with managed `PersistentVolumeClaims` where possible.
-8. **Encrypt the OPC UA private keys at rest (High).** Every OPC UA component in
+8. **Protect data at rest.** Enable encryption at rest for the node's disk
+   (`/influxdb2`, `/cloudlib-postgres` and the other `hostPath` volumes) and for
+   Kubernetes Secrets (e.g. a KMS provider or an encrypted etcd). Replace ad-hoc
+   `hostPath` volumes with managed `PersistentVolumeClaims` where possible. Note
+   that `/cloudlib-postgres` holds the Cloud Library's account password hashes
+   **and** every nodeset uploaded to it.
+9. **Encrypt the OPC UA private keys at rest (High).** Every OPC UA component in
    this stack holds its application instance certificate in a `Directory`
    certificate store, so the **private key sits unencrypted on the Pi's
    filesystem** under `<component>/pki/own/private/*.pfx`:
@@ -1211,7 +1346,7 @@ deployment. Prioritize the items marked **(High)**.
      UID (`chmod 0700`), set `runAsNonRoot` with a dedicated UID per component,
      and avoid mounting the `pki` directory into any other pod. Note that
      `hostPath` volumes are readable by anyone with node access, which is one
-     more reason to prefer `PersistentVolumeClaims` (item 7).
+     more reason to prefer `PersistentVolumeClaims` (item 8).
    - **Move the CA off the device entirely.** The self-signed issuer is a
      convenience so the demo can provision certificates with no external
      infrastructure. In production, use a real GDS or an existing enterprise PKI
@@ -1235,21 +1370,21 @@ deployment. Prioritize the items marked **(High)**.
    > certificates can be inspected with `ls` and `openssl` while learning the
    > system. That trade-off is appropriate for a reference deployment and
    > inappropriate for production.
-9. **Add auditing and monitoring.** Ship component and access logs to a central,
+10. **Add auditing and monitoring.** Ship component and access logs to a central,
    tamper-evident store; enable Kubernetes audit logging; and add alerting on
    authentication failures, pod restarts, and disk usage.
-10. **Manage capacity and availability.** Set InfluxDB retention policies to bound
+11. **Manage capacity and availability.** Set InfluxDB retention policies to bound
     growth, back up `/influxdb2` regularly, and consider multi-node/HA for the
     broker and database to remove the single-point-of-failure.
-11. **Keep software patched.** Pin and regularly update the container image
+12. **Keep software patched.** Pin and regularly update the container image
      versions, apply OS/K3s security updates, and scan images for known
      vulnerabilities as part of your release process.
-12. **Scope Portainer's cluster access (High).** The demo binds Portainer to the
+13. **Scope Portainer's cluster access (High).** The demo binds Portainer to the
     built-in `cluster-admin` role. For production, grant it a least-privilege
     `Role`/`ClusterRole` limited to the namespaces and resources operators
     actually manage, protect its UI behind the ingress, and enforce strong,
     per-user Portainer accounts (not the shared credentials).
-13. **Authorize and throttle the command/control path.** Restrict who can publish
+14. **Authorize and throttle the command/control path.** Restrict who can publish
     to the `commands` topic (broker ACLs) and validate/allow-list the OPC UA
     methods and nodes UA Cloud Commander may Write/Call. UA Cloud Action includes a **built-in rate limiter** on its actuation, so a faulty threshold
     or spoofed value cannot drive OT devices uncontrollably; tune its limit for
