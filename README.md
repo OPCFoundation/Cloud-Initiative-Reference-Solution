@@ -36,7 +36,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Inspecting the Broker with MQTT Explorer](#inspecting-the-broker-with-mqtt-explorer)
 - [Self-Hosted UA Cloud Library](#self-hosted-ua-cloud-library)
   - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
-    - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
+  - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
 - [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
