@@ -36,6 +36,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Inspecting the Broker with MQTT Explorer](#inspecting-the-broker-with-mqtt-explorer)
 - [Self-Hosted UA Cloud Library](#self-hosted-ua-cloud-library)
   - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
+    - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
 - [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
@@ -811,7 +812,7 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
 | **UA Cloud Action** | `http://<device-ip>:8082` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | **Web UI for the Mosquitto broker** — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
-| **UA Cloud Library** | `http://<device-ip>:8083` | **Web UI for the self-hosted store of OPC UA Information Models** — browse, search, upload and download nodesets, and explore the REST API. Register an account on first use; see *Self-Hosted UA Cloud Library*. ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
+| **UA Cloud Library** | `http://<device-ip>:8083` | **Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports** — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
 
 To keep both UIs reachable on the single node,
  **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
@@ -1042,6 +1043,24 @@ deployment.
 > and **not** acceptable on an untrusted one. To restore verification, set
 > `EmailSenderAPIKey` from a public email service like SendGrid (and `RegistrationEmailFrom` / `RegistrationEmailReplyTo`)
 > on the `ua-cloudlibrary` Deployment.
+
+### First Login: Register with Your `IOT_USERNAME`
+
+The Cloud Library has **no account until you create one**. On first use, browse to
+`http://<device-ip>:8083`, choose **Register**, and sign up with:
+
+| Field | Value |
+|---|---|
+| Username | **exactly the `IOT_USERNAME` you deployed the solution with** |
+| Password | a strong password of your own choosing |
+
+Registering under that specific name matters, because the Cloud Library is a multi-tenant service and filters
+what you can see by *who owns it*. UA Data Processor authenticates as
+`IOT_USERNAME` when it uploads, so an account with the same name sees every
+Digital Product Passport the processor has produced.
+Register under any other name (an email address, a different spelling) and the
+library will look **empty**, even though the DPPs are stored and the uploads
+are succeeding.
 
 ## UA Data Processor (PCF and Battery Passport)
 
