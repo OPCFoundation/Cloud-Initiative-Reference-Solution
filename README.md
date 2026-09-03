@@ -35,7 +35,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [Single Cluster vs. Split Edge/Cloud Deployment](#single-cluster-vs-split-edgecloud-deployment)
 - [Inspecting the Broker with MQTT Explorer](#inspecting-the-broker-with-mqtt-explorer)
   - [Connecting](#connecting)
-- [Self-Hosted UA Cloud Library](#self-hosted-ua-cloud-library)
+- [UA Cloud Library for Digital Product Passports](#ua-cloud-library-for-digital-product-passports)
   - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
   - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
 - [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
@@ -986,13 +986,13 @@ Once connected you will see the live topic tree:
 > kubectl scale deployment/mqtt-explorer -n cloud --replicas=0
 > ```
 
-## Self-Hosted UA Cloud Library
+## UA Cloud Library for Digital Product Passports
 
 The [UA Cloud Library](https://github.com/OPCFoundation/UA-CloudLibrary) is the
 OPC Foundation's store of **OPC UA Information Models**, publicly hosted at
 [uacloudlibrary.opcfoundation.org](https://uacloudlibrary.opcfoundation.org).
 
-**In this solution it is used as the store for [EU Digital Product Passports](https://environment.ec.europa.eu/topics/circular-economy/ecodesign-sustainable-products-regulation_en) (DPPs).**
+**In this solution it is self-hosted and used as the store for [EU Digital Product Passports](https://single-market-economy.ec.europa.eu/single-market/digital-product-passport_en) (DPPs).**
 A Digital Product Passport is a
 structured, machine-readable record of what a product *is* and what it cost the
 environment to make — its material composition, its carbon footprint, and its
