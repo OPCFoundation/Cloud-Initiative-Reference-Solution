@@ -34,6 +34,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - ["Your Portainer instance timed out for security purposes"](#your-portainer-instance-timed-out-for-security-purposes)
   - [Single Cluster vs. Split Edge/Cloud Deployment](#single-cluster-vs-split-edgecloud-deployment)
 - [Inspecting the Broker with MQTT Explorer](#inspecting-the-broker-with-mqtt-explorer)
+  - [Connecting](#connecting)
 - [Self-Hosted UA Cloud Library](#self-hosted-ua-cloud-library)
   - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
   - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
@@ -41,6 +42,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
   - [Production Shifts and Choosing the Grafana Time Range](#production-shifts-and-choosing-the-grafana-time-range)
+    - [Why the time range matters](#why-the-time-range-matters)
   - [Reading the UA Cloud Publisher Diagnostics Dashboard](#reading-the-ua-cloud-publisher-diagnostics-dashboard)
 - [Tutorials](#tutorials)
   - [Onboarding an OPC UA Device](./tutorial-onboarding-opcua-device.md)
@@ -54,6 +56,12 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Security Analysis (STRIDE)](#security-analysis-stride)
   - [Trust Boundaries and Assets](#trust-boundaries-and-assets)
   - [STRIDE Threat Assessment](#stride-threat-assessment)
+    - [Spoofing (identity)](#spoofing-identity)
+    - [Tampering (integrity)](#tampering-integrity)
+    - [Repudiation (auditability)](#repudiation-auditability)
+    - [Information disclosure (confidentiality)](#information-disclosure-confidentiality)
+    - [Denial of service (availability)](#denial-of-service-availability)
+    - [Elevation of privilege (authorization)](#elevation-of-privilege-authorization)
   - [Production Hardening Recommendations](#production-hardening-recommendations)
 
 ## Why This Solution
