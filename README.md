@@ -1138,35 +1138,55 @@ That is the same argument as OPC UA at the edge, applied to the query layer.
 ### Calling the API
 
 The API is at `http://<device-ip>:8084`. It is **machine-facing** — there is no
-web UI — and apart from `/v1/info` every endpoint is a `POST` that takes a JSON
-body:
+web UI. Browsing and discovery are `GET`s; the `POST` endpoints are bulk
+operations that take a JSON body naming the elements to act on:
 
-| Endpoint | What it does |
-|---|---|
-| `/v1/info` | Server information. A `GET`, and the **only endpoint exempt from authentication** — useful for checking the service is up |
-| `/v1/objects/list` | Browse the ISA-95 hierarchy (children of a given node) |
-| `/v1/objects/related` | Follow typed relationships from one object to others |
-| `/v1/objects/value` | Read the current value of an object |
-| `/v1/objects/history` | Read historical values over a time range |
-| `/v1/objecttypes/query` | Discover the available object types |
-| `/v1/relationshiptypes/query` | Discover the available relationship types |
-| `/v1/subscriptions/*` | Register, list and `stream` live updates via server-sent events |
-
-> ℹ️ **Every route is under `/v1`.** Calling `/objects/list` without the version
-> prefix returns `404`, which is easy to mistake for the service being down.
-> `curl` reporting `000` means something different again — no HTTP response at
-> all, so the pod is not Ready or the Service has no endpoints; check
-> `kubectl get pods -n cloud -l app=i3x4influx` first.
+| Endpoint | Verb | What it does |
+|---|---|---|
+| `/v1/info` | `GET` | Server information. The **only endpoint exempt from authentication** — useful for checking the service is up |
+| `/v1/objects` | `GET` | **Browse the ISA-95 hierarchy.** Add `?root=true` for the top level, or `?typeElementId=…` to filter by type |
+| `/v1/namespaces` | `GET` | List the OPC UA namespaces present in the data |
+| `/v1/objecttypes` | `GET` | List the available object types |
+| `/v1/relationshiptypes` | `GET` | List the available relationship types |
+| `/v1/objects/list` | `POST` | Bulk **look up objects by id** (`elementIds`) — not a browse |
+| `/v1/objects/related` | `POST` | Follow typed relationships from one object to others |
+| `/v1/objects/value` | `POST` | Read the current value of one or more objects |
+| `/v1/objects/history` | `POST` | Read historical values over a time range |
+| `/v1/subscriptions/*` | `POST` | Register, list and `stream` live updates via server-sent events |
 
 Authentication is **HTTP Basic** with the `IOT_USERNAME` / `IOT_PASSWORD` you
-deployed with, so a browse looks like:
+deployed with. Start at the root of the hierarchy and walk down:
+
+```sh
+# is the service alive? (no credentials needed)
+curl -s "http://localhost:8084/v1/info"
+
+# the top of the ISA-95 tree
+curl -s -u "$IOT_USERNAME:$IOT_PASSWORD" \
+  "http://localhost:8084/v1/objects?root=true"
+
+# every object, including the variables at the leaves
+curl -s -u "$IOT_USERNAME:$IOT_PASSWORD" \
+  "http://localhost:8084/v1/objects"
+```
+
+Take an `elementId` from that output and use it with the `POST` endpoints, for
+example to read a current value:
 
 ```sh
 curl -s -u "$IOT_USERNAME:$IOT_PASSWORD" \
   -X POST -H 'Content-Type: application/json' \
-  -d '{}' \
-  "http://localhost:8084/v1/objects/list"
+  -d '{"elementIds":["<elementId from above>"]}' \
+  "http://localhost:8084/v1/objects/value"
 ```
+
+> ℹ️ **Reading an empty response.** The `POST` endpoints are *bulk* operations
+> driven by the ids in the request body, so sending `{}` returns an empty result
+> rather than an error — it did exactly what was asked. If a call looks empty,
+> check the body names some `elementIds`, and use `GET /v1/objects` to discover
+> them. Every route is also under `/v1`: omitting the prefix returns `404`, and
+> `curl` reporting `000` means no HTTP response at all — the pod is not Ready, so
+> check `kubectl get pods -n cloud -l app=i3x4influx` first.
 
 > ℹ️ **Two time ranges control what you see.** `INFLUX_BROWSE_RANGE` (default
 > `-24h`) is how far back the server looks when building the hierarchy, and
