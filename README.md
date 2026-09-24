@@ -47,6 +47,8 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x)
   - [Calling the API](#calling-the-api)
 - [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp)
+  - [Checking it is running](#checking-it-is-running)
+  - [Talking to it with curl](#talking-to-it-with-curl)
   - [Connecting Claude Desktop](#connecting-claude-desktop)
   - [Trying it without an AI client](#trying-it-without-an-ai-client)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
@@ -1081,7 +1083,7 @@ certificate is self-signed, so your browser will warn on first visit.
 | **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
 | **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the i3X REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
-| **UA Cloud AI** | `https://cloudai.plant.local/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
+| **UA Cloud AI** | `https://cloudai.plant.local/health` | **Not a web UI** — this is an [MCP](https://modelcontextprotocol.io) endpoint for agentic AI applications, and the URL shown is only a health check that returns `{"status":"ok"}`. The endpoint itself is `/mcp`, which answers `POST` only and returns **405** to a browser. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
 
 **Reached directly on the node IP.** Replace `<device-ip>` with the CM5's
 address (from `ip addr` or `kubectl get svc`). These are still `LoadBalancer`
@@ -1508,6 +1510,46 @@ already exposes and presents them as **14 tools**:
 > that guesses will silently pick the wrong one, so `describe_available_data`
 > tells it which interface answers which kind of question before it starts.
 
+### Checking it is running
+
+The MCP endpoint is **not a web page**. It speaks JSON-RPC over HTTP `POST`, so
+opening `https://cloudai.plant.local/mcp` in a browser returns:
+
+```
+405 Method Not Allowed
+Allow: POST
+```
+
+That is the correct response, and it is a useful signal: reaching a `405` means
+TLS, routing **and your credentials** all worked, because wrong credentials
+return `401` instead.
+
+To check the server in a browser, use the health endpoint instead — it answers
+`GET` and needs no credentials:
+
+```
+https://cloudai.plant.local/health
+```
+
+```json
+{"status":"ok"}
+```
+
+### Talking to it with curl
+
+No extra tooling required. This performs the MCP `initialize` handshake:
+
+```bash
+curl -k -u "$IOT_USERNAME:$IOT_PASSWORD" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}' \
+  https://cloudai.plant.local/mcp
+```
+
+A response containing `"serverInfo":{"name":"UA-CloudAI"...}` confirms the server
+is working end to end.
+
 ### Connecting Claude Desktop
 
 Claude Desktop speaks **stdio**, launching the server itself. Add this to
@@ -1535,6 +1577,17 @@ Generate the header value with:
 printf '%s' "$IOT_USERNAME:$IOT_PASSWORD" | base64
 ```
 
+> ⚠️ **This needs [Node.js](https://nodejs.org) installed** (which provides
+> `npx`). `npx` fetches a package from the public npm registry and runs it
+> without installing it permanently — so the machine running Claude Desktop needs
+> internet access, and `mcp-remote` is third-party code downloaded at launch.
+> Check with `node --version`; if it is missing, install Node.js first.
+>
+> On a locked-down or air-gapped network, avoid `npx` entirely by running
+> UA Cloud AI **locally in stdio mode** instead of bridging to the cluster — see
+> the [UA-CloudAI README](https://github.com/barnstee/UA-CloudAI), which shows a
+> `claude_desktop_config.json` that launches the binary directly.
+
 ### Trying it without an AI client
 
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector) lists and
@@ -1544,15 +1597,15 @@ calls the tools by hand, which is the quickest way to confirm the server works:
 npx @modelcontextprotocol/inspector
 ```
 
-Set **Transport** to `Streamable HTTP`, **URL** to `https://cloudai.plant.local/mcp`,
-and add the same `Authorization` header. You should see all 14 tools.
+This also requires Node.js, and prints a `http://localhost:6274` URL to open. Set
+**Transport** to `Streamable HTTP`, **URL** to `https://cloudai.plant.local/mcp`,
+and add an `Authorization` header with the same base64 value as above. You should
+see all 14 tools.
 
-Check it is running at all — `/health` needs no credentials:
-
-```bash
-curl -k https://cloudai.plant.local/health
-# {"status":"ok"}
-```
+> ℹ️ MCP Inspector runs on **your** machine, not the Pi. It therefore needs the
+> `*.plant.local` hostnames in its own hosts file, and must trust (or skip) the
+> self-signed certificate. If it cannot connect, use the `curl` handshake above
+> to confirm the server itself is healthy before debugging the client.
 
 > ⚠️ The certificate is self-signed, hence `-k` above. Clients that cannot be
 > told to trust it will refuse to connect; distribute `tls.crt` as the trust
