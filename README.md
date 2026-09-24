@@ -39,7 +39,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)
   - [First Login: Register with Your IOT_USERNAME](#first-login-register-with-your-iot_username)
 - [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
-- [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x)
+- [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x)
   - [Calling the API](#calling-the-api)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
@@ -142,7 +142,7 @@ Open standards are used *throughout* the stack, not just at the edges:
 | **MQTT 5.0** (OASIS) | The messaging transport, with TLS and authentication. MQTT v5 features (Correlation Data, Response Topic, Message Expiry) carry the request/response correlation for OPC UA Actions. |
 | **EN 18222** (CEN/CENELEC) | Digital Product Passport data model and unique identifiers — the structure of the DPPs that UA Data Processor generates and stores in the UA Cloud Library. |
 | **EN 18223** (CEN/CENELEC) | Digital Product Passport system architecture and data exchange — how DPPs are stored and retrieved by downstream consumers (customer, recycler, regulator) over the Cloud Library's REST API. |
-| **I3X** ([i3x.dev](https://i3x.dev)) | The vendor-neutral REST API for browsing industrial data as a connected ISA-95 graph — enterprise, site, area, line, station — instead of as flat time series, with typed relationships and current/historical values behind one interface. |
+| **i3X** ([i3x.dev](https://i3x.dev)) | The vendor-neutral REST API for browsing industrial data as a connected ISA-95 graph — enterprise, site, area, line, station — instead of as flat time series, with typed relationships and current/historical values behind one interface. |
 | **Kubernetes** (CNCF) | The deployment and operations model. |
 
 Because these are *published specifications* rather than product features, any
@@ -214,7 +214,7 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | **ua-cloudlibrary** | `cloud` | `ghcr.io/opcfoundation/ua-cloudlibrary:latest` | **8083 (UI/REST)** |
 | **cloudlib-postgres** | `cloud` | `postgres:17.6-alpine` | 5432 (ClusterIP only) |
 | **ua-dataprocessor** | `cloud` | `ghcr.io/opcfoundation/ua-dataprocessor:main` | — |
-| **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | **8084 (I3X REST API)** |
+| **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | **8084 (i3X REST API)** |
 | **portainer** | `cloud` | `portainer/portainer-ce:2.44.0` | **9443 (HTTPS UI)**, 9000, 8000 |
 
 **What each component does**
@@ -275,11 +275,11 @@ end-to-end pipeline from industrial protocols to a time-series database.
   OPC UA telemetry back out of InfluxDB and calculates a **Product Carbon
   Footprint (PCF)** and a **Digital Battery Passport**, publishing the results as
   OPC UA Information Models into the Cloud Library above.
-- **i3x4influx** — an **[I3X](https://i3x.dev) server over InfluxDB**. It exposes
-  the telemetry already in the `mqtt` bucket through the vendor-neutral I3X REST
+- **i3x4influx** — an **[i3X](https://i3x.dev) server over InfluxDB**. It exposes
+  the telemetry already in the `mqtt` bucket through the vendor-neutral i3X REST
   API, so clients can browse the data as an **ISA-95 hierarchy** and follow typed
   relationships instead of writing Flux. See
-  [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x).
+  [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x).
 
 **Configuration resources**
 
@@ -830,7 +830,7 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **UA Cloud Action** | `http://<device-ip>:8082` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
 | **UA Cloud Library** | `http://<device-ip>:8083` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **I3X for InfluxDB** | `http://<device-ip>:8084/swagger` | **Swagger UI for the [I3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x). |
+| **i3X for InfluxDB** | `http://<device-ip>:8084/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x). |
 
 To keep both UIs reachable on the single node,
  **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
@@ -1109,7 +1109,7 @@ kubectl logs -f deployment/ua-dataprocessor -n cloud
 > `WATTTIME_PASSWORD` the lookup simply returns an average carbon intensity and the Battery Passport still works.
 > Credentials are commented out in [`cloud.yaml`](./cloud.yaml) ready to be filled in.
 
-## Browsing the Data as a Graph (I3X)
+## Browsing the Data as a Graph (i3X)
 
 Everything up to this point treats the telemetry as **time series**: Grafana
 charts it, the Data Processor queries it with Flux, and both need to know that a
@@ -1118,7 +1118,7 @@ station's status lives in the field `Payload_Status_Value` of measurement
 `opcua_metadata`. That is precise, but it is storage-specific — the queries only
 make sense against *this* InfluxDB schema.
 
-**[I3X](https://i3x.dev)** (Industrial Information Interoperability eXchange) is
+**[i3X](https://i3x.dev)** (Industrial Information Interoperability eXchange) is
 the specification for the other view: the same data as a **connected graph**.
 Clients browse an **ISA-95 hierarchy** — enterprise → site → area → production
 line → station — follow *typed relationships* between objects, and read current
@@ -1127,12 +1127,12 @@ sits underneath.
 
 The **i3x4influx** container serves that API from the telemetry already in the
 `mqtt` bucket. Nothing extra is ingested and no second copy of the data is kept:
-it maps I3X calls onto the same `opcua_pubsub` and `opcua_metadata` measurements
+it maps i3X calls onto the same `opcua_pubsub` and `opcua_metadata` measurements
 Telegraf writes and Grafana reads.
 
-**Why this matters for interoperability.** A client written against I3X (or the OPC UA WebAPI) works
+**Why this matters for interoperability.** A client written against i3X (or the OPC UA WebAPI) works
 against any conforming server. Swap InfluxDB for another historian and the
-dashboards and queries would have to be rewritten — an I3X client would not.
+dashboards and queries would have to be rewritten — an i3X client would not.
 That is the same argument as OPC UA at the edge, applied to the query layer.
 
 ### Calling the API
@@ -1379,7 +1379,7 @@ and what to change before an internet-exposed or production deployment.
       |                                                                                                    [Grafana] -----+ (query token)
       |                                                                                          [Model importer Job] ----+ (writes opcua_model)
       |                                                                                       [UA Data Processor] --------+ (reads telemetry + metadata)
-      |                                                                                       [I3X for InfluxDB :8084] ---+ (reads telemetry + metadata)
+      |                                                                                       [i3X for InfluxDB :8084] ---+ (reads telemetry + metadata)
       |                                                                                                  |
       |                                                       (publishes PCF / Battery Passport models)  v
       |                                                                            [UA Cloud Library :8083] --> [PostgreSQL :5432, ClusterIP]
@@ -1394,7 +1394,7 @@ PostgreSQL database** (which holds its user accounts and every stored **Digital
 Product Passport** — a regulatory record whose integrity is the point of keeping
 it), the broker's private key, the
 Portainer `cluster-admin` ServiceAccount token (full control of the cluster), and
-the K3s node itself (root of trust for all `hostPath` data). The **I3X API**
+the K3s node itself (root of trust for all `hostPath` data). The **i3X API**
 (`:8084`) is a further read path to the same telemetry, so it inherits the value
 of the data it exposes.
 
@@ -1417,7 +1417,7 @@ configuration. The residual risk is the part to act on: see
 - Anything on the pod network impersonates a Modbus master
 - **Theft of the Publisher's CA key (`/publisher/pki/issuer/private`) lets an attacker mint a trusted certificate for any component**
 - **Anyone who can reach the UA Cloud Library UI (`:8083`) can self-register a working account and act as a legitimate user.**
-- An unauthenticated caller queries the **I3X API** (`:8084`) and reads the entire ISA-95 hierarchy and its values
+- An unauthenticated caller queries the **i3X API** (`:8084`) and reads the entire ISA-95 hierarchy and its values
 
 **Mitigations already in place**
 
@@ -1426,7 +1426,7 @@ configuration. The residual risk is the part to act on: see
 - The **UA Cloud Action web UI and OPC UA Web API mandate HTTP Basic authentication on every request (no anonymous access)**
 - OPC UA supports certificate exchange between Publisher/Commander and server
 - The Cloud Library requires an account to upload, and its API is authenticated with `ServiceUsername`/`ServicePassword`
-- The **I3X API fails closed**: with no Basic or OAuth2 credentials configured it returns `503` to every request rather than serving data anonymously
+- The **i3X API fails closed**: with no Basic or OAuth2 credentials configured it returns `503` to every request rather than serving data anonymously
 
 **Residual risk / gaps**
 
@@ -1439,7 +1439,7 @@ configuration. The residual risk is the part to act on: see
 - **The Cloud Library has email verification disabled (`EmailSenderAPIKey` unset), so self-registration is open and accounts are not tied to a provable identity**
 - **MQTT Explorer (`:4000`) has no authentication of its own, so anyone who can reach it can publish to any topic — including `commands`**
 - **Modbus TCP has no authentication whatsoever by protocol design** — the simulator (and any real Modbus device) trusts every caller
-- **The I3X API shares the same `IOT_USERNAME` / `IOT_PASSWORD` as everything else**, so it grants no separate identity and a single leaked credential opens it too
+- **The i3X API shares the same `IOT_USERNAME` / `IOT_PASSWORD` as everything else**, so it grants no separate identity and a single leaked credential opens it too
 
 #### Tampering (integrity)
 
@@ -1470,7 +1470,7 @@ configuration. The residual risk is the part to act on: see
 - **Stored Digital Product Passports are not signed or provenance-checked, and because registration is open any account can upload one, so a passport carries no cryptographic proof of origin**
 - **PCF and Battery Passport results are published without a signature, so a consumer, recycler or regulator cannot verify they came from this pipeline**
 - **Modbus traffic is plaintext and unauthenticated**, so anything on the pod network can read or write the simulated device's registers
-- **I3X is a read-only projection, so it cannot alter stored telemetry** — but it is served over plain HTTP, so a man-in-the-middle could alter responses in flight and misrepresent the plant to a client
+- **i3X is a read-only projection, so it cannot alter stored telemetry** — but it is served over plain HTTP, so a man-in-the-middle could alter responses in flight and misrepresent the plant to a client
 
 #### Repudiation (auditability)
 
@@ -1493,7 +1493,7 @@ configuration. The residual risk is the part to act on: see
 - **Cloud Library accounts are self-registered with unverified email addresses, so the recorded uploader identity is weak evidence**
 - **UA Data Processor does not retain the telemetry window or carbon-intensity figure behind each PCF, so a passport's figures are not independently reproducible**
 - No log shipping or retention policy
-- **I3X API queries are not attributably logged**, so there is no record of who browsed or exported the production data
+- **i3X API queries are not attributably logged**, so there is no record of who browsed or exported the production data
 
 #### Information disclosure (confidentiality)
 
@@ -1506,7 +1506,7 @@ configuration. The residual risk is the part to act on: see
 - **Reading an OPC UA private key — or the Publisher's CA key — off the node (or off the SSD if the device is removed)**
 - **Reading the Cloud Library's PostgreSQL database directly off `/cloudlib-postgres`, which exposes every stored Digital Product Passport and all account password hashes**
 - **Inferring production volumes, energy use and product composition from stored passports.**
-- **Reading the whole production hierarchy and its history through the I3X API**, which is designed to make exactly that convenient
+- **Reading the whole production hierarchy and its history through the i3X API**, which is designed to make exactly that convenient
 
 **Mitigations already in place**
 
@@ -1525,8 +1525,8 @@ configuration. The residual risk is the part to act on: see
 - **The PostgreSQL data directory is an unencrypted `hostPath` and the database password is the shared `IOT_PASSWORD`**
 - **The Cloud Library is served over plain HTTP, so registration and login credentials cross the network in the clear**
 - All UIs are exposed on the node IP with no network policy
-- **The I3X API is served over plain HTTP with Basic auth**, so both the credentials and every value returned cross the network in the clear
-- **The I3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach `:8084` can enumerate the full API surface and read the server's capabilities before authenticating
+- **The i3X API is served over plain HTTP with Basic auth**, so both the credentials and every value returned cross the network in the clear
+- **The i3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach `:8084` can enumerate the full API surface and read the server's capabilities before authenticating
 
 #### Denial of service (availability)
 
@@ -1539,7 +1539,7 @@ configuration. The residual risk is the part to act on: see
 - Overloading the simulated stations or the Modbus simulator with connections
 - **Filling the disk by uploading large or numerous passports/nodesets to the Cloud Library**
 - **Exhausting InfluxDB with the Data Processor's repeated multi-day queries.**
-- Exhausting InfluxDB through the I3X API, whose `/v1/objects/history` and `/v1/subscriptions/stream` endpoints can each drive repeated backend queries
+- Exhausting InfluxDB through the i3X API, whose `/v1/objects/history` and `/v1/subscriptions/stream` endpoints can each drive repeated backend queries
 
 **Mitigations already in place**
 
@@ -1549,7 +1549,7 @@ configuration. The residual risk is the part to act on: see
 - **UA Cloud Action has a built-in rate limiter that bounds how often it actuates**
 - The Modbus simulator declares CPU/memory `requests`/`limits`
 - The Data Processor polls on a fixed interval rather than continuously
-- I3X caches metadata (`I3X_METADATA_CACHE_SECONDS`) and bounds its browse and latest-value lookups to fixed time ranges rather than scanning the whole bucket
+- i3X caches metadata (`I3X_METADATA_CACHE_SECONDS`) and bounds its browse and latest-value lookups to fixed time ranges rather than scanning the whole bucket
 
 **Residual risk / gaps**
 
@@ -1559,7 +1559,7 @@ configuration. The residual risk is the part to act on: see
 - A single node is a single point of failure
 - The broker persists to `hostPath` (`/mosquitto`), reducing message loss on restart though the single node remains a SPOF
 - UA Cloud Action's rate limit still needs tuning for your environment
-- **No rate limit or result cap on the I3X API**, so a client may open many concurrent `stream` subscriptions or request unbounded history ranges
+- **No rate limit or result cap on the i3X API**, so a client may open many concurrent `stream` subscriptions or request unbounded history ranges
 
 #### Elevation of privilege (authorization)
 
@@ -1590,7 +1590,7 @@ configuration. The residual risk is the part to act on: see
 - **The Cloud Library's API account shares the single `IOT_PASSWORD` used everywhere else, so one leaked credential grants model-store write access**
 - Commander bridges IT→OT with method-call/write capability and no fine-grained authorization
 - No RBAC scoping for the workloads
-- **I3X authorization is all-or-nothing**: any caller who authenticates sees the entire hierarchy, with no per-site, per-line or per-tag scoping
+- **i3X authorization is all-or-nothing**: any caller who authenticates sees the entire hierarchy, with no per-site, per-line or per-tag scoping
 
 
 ### Production Hardening Recommendations
@@ -1634,7 +1634,7 @@ deployment. Prioritize the items marked **(High)**.
    proxy/ingress, place the broker and database on an internal network only, and
    add Kubernetes **`NetworkPolicy`** rules so pods can only reach the peers they
    need.
-7. **Secure the I3X API (High).** The I3X server exposes the whole production
+7. **Secure the i3X API (High).** The i3X server exposes the whole production
    hierarchy and its history to any caller who authenticates, over **plain HTTP
    with Basic auth** — so credentials and data both cross the network in the
    clear. Terminate TLS in front of it, and switch from Basic auth to **OAuth2**
