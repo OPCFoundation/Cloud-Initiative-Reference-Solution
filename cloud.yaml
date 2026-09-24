@@ -3013,6 +3013,45 @@ spec:
       port: 3000
       targetPort: 3000
 ---
+# ---------------------------------------------------------------------------
+# TLS certificate shared by the .NET web services
+#
+# Several services in this solution authenticate with HTTP Basic, which sends
+# reversible credentials on EVERY request. Over plain HTTP anyone on the
+# network path can read and replay them, so those services also serve HTTPS.
+#
+# This Secret is NOT created by applying this file - the certificate has to be
+# generated first. For a reference deployment a self-signed certificate is
+# fine; on the device run:
+#
+#   cd ~
+#   openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
+#     -keyout tls.key -out tls.crt \
+#     -subj "/CN=$(hostname -I | awk '{print $1}')" \
+#     -addext "subjectAltName=IP:$(hostname -I | awk '{print $1}'),DNS:localhost"
+#
+#   # Kestrel loads a PKCS#12 bundle, so convert the pair:
+#   openssl pkcs12 -export -out tls.pfx -inkey tls.key -in tls.crt \
+#     -passout pass:changeit
+#
+#   kubectl create secret generic cloud-services-tls -n cloud \
+#     --from-file=tls.crt=tls.crt \
+#     --from-file=tls.key=tls.key \
+#     --from-file=tls.pfx=tls.pfx \
+#     --from-literal=pfx-password=changeit
+#
+#   # Keep the private key out of reach of other users on the device:
+#   shred -u tls.key tls.pfx   # (keep tls.crt to distribute as the trust anchor)
+#
+# Because the certificate is self-signed, browsers will warn on first visit and
+# API clients must be told to trust tls.crt. Replace it with a certificate from
+# your own CA for anything beyond a demonstration.
+#
+# Regenerate and roll it out with:
+#   kubectl delete secret cloud-services-tls -n cloud   # then re-create as above
+#   kubectl rollout restart deployment -n cloud ua-cloudaction i3x4influx ua-cloudlibrary ua-cloudai
+# ---------------------------------------------------------------------------
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -3040,6 +3079,12 @@ spec:
           value: "${IOT_USERNAME}"
         - name: ADMIN_PASSWORD
           value: "${IOT_PASSWORD}"
+        # HTTP only, deliberately. TLS is terminated at the Traefik ingress
+        # rather than in this process: the app calls UseHttpsRedirection()
+        # unconditionally, so binding an HTTPS port here would make it answer
+        # every plain-HTTP request with a 307 to HTTPS - which breaks in-cluster
+        # callers that do not trust the self-signed certificate.
+        # This port is NOT reachable from outside the cluster (ClusterIP).
         - name: ASPNETCORE_URLS
           value: "http://+:8080"
         # --- OPC UA Web API rate limiter (per client IP, fixed window) ---
@@ -3125,7 +3170,10 @@ metadata:
   name: ua-cloudaction
   namespace: cloud
 spec:
-  type: LoadBalancer
+  # ClusterIP, NOT LoadBalancer: the plain-HTTP port must never be bound on the
+  # node IP, because Basic credentials sent to it cross the LAN in cleartext.
+  # In-cluster callers and the kubelet probes use this Service.
+  type: ClusterIP
   selector:
     app: ua-cloudaction
   ports:
@@ -3282,8 +3330,11 @@ spec:
             - containerPort: 8080
               name: http
           env:
-            - name: ASPNETCORE_HTTP_PORTS
-              value: "8080"
+            # HTTP only. TLS is terminated at the Traefik ingress. This also
+            # keeps the UA Data Processor upload path working: it posts DPPs
+            # with a plain HttpClient that would reject a self-signed cert.
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
             # Npgsql connection string. The key name must match exactly, as the
             # server reads ConnectionStrings:CloudLibraryPostgreSQL and throws a
             # descriptive InvalidOperationException when it is missing.
@@ -3316,7 +3367,10 @@ metadata:
   name: ua-cloudlibrary
   namespace: cloud
 spec:
-  type: LoadBalancer
+  # ClusterIP: the HTTP port stays inside the cluster. UA Data Processor uploads
+  # Digital Product Passports to it with a plain HttpClient that would reject the
+  # self-signed certificate, so that path must remain HTTP - but only internally.
+  type: ClusterIP
   selector:
     app: ua-cloudlibrary
   ports:
@@ -3458,8 +3512,11 @@ spec:
             - containerPort: 8080
               name: http
           env:
-            - name: ASPNETCORE_HTTP_PORTS
-              value: "8080"
+            # HTTP only. TLS is terminated at the Traefik ingress - see the
+            # note on ua-cloudaction above for why binding HTTPS in-process
+            # would break in-cluster callers. ClusterIP keeps this off the LAN.
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
             # --- InfluxDB (the same measurements Telegraf writes) ---
             - name: INFLUX_URL
               value: "http://influxdb.cloud.svc.cluster.local:8086"
@@ -3524,10 +3581,224 @@ metadata:
   name: i3x4influx
   namespace: cloud
 spec:
-  type: LoadBalancer
+  # ClusterIP: UA Cloud AI reaches i3X over this Service, and the probes use it.
+  type: ClusterIP
   selector:
     app: i3x4influx
   ports:
     - name: http
       port: 8084
       targetPort: 8080
+---
+# ---------------------------------------------------------------------------
+# UA Cloud AI - an MCP (Model Context Protocol) server that exposes this plant
+# to agentic AI applications such as Claude Desktop, VS Code or any web-based
+# MCP test client.
+#
+# It does not read the historian directly. Instead it fronts the two APIs that
+# already exist in this solution, and presents them as 14 tools:
+#   - the I3X server (i3x4influx) for the semantic ISA-95 graph, and
+#   - UA Cloud Action's OPC UA Web API for the raw address space.
+#
+# The two APIs overlap but their identifiers are NOT interchangeable (I3X uses
+# elementId, OPC UA uses NodeId), so the server also exposes an orientation
+# tool that explains to the model which interface to use for which question.
+#
+# The server is READ-ONLY by design: it browses and reads, and offers no write,
+# method-call or actuation path. An agent can analyse the plant but not change
+# it. That boundary is deliberate - see the STRIDE assessment in the README.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ua-cloudai
+  namespace: cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ua-cloudai
+  template:
+    metadata:
+      labels:
+        app: ua-cloudai
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      initContainers:
+        # Both backends must be answering before the MCP server advertises its
+        # tools, otherwise the first thing an agent sees is a connection error.
+        - name: wait-for-backends
+          image: busybox:1.38
+          command:
+            - "sh"
+            - "-c"
+            - "until nc -z i3x4influx 8084 && nc -z ua-cloudaction 8082; do echo waiting for backends; sleep 5; done"
+      containers:
+        - name: ua-cloudai
+          image: ghcr.io/opcfoundation/ua-cloudai:main
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: http
+          env:
+            # Streamable HTTP transport. Claude Desktop can instead launch the
+            # binary locally with MCP_TRANSPORT=stdio; see the UA-CloudAI README.
+            - name: MCP_TRANSPORT
+              value: "http"
+            # HTTP only in-cluster; TLS is terminated at the Traefik ingress.
+            # (The server can also serve HTTPS itself via MCP_TLS_PEM_PATH /
+            # MCP_TLS_KEY_PATH - useful when running it standalone in Docker.)
+            - name: MCP_PORT
+              value: "5000"
+            # --- Downstream: I3X semantic graph ---
+            # Uses the in-cluster HTTP listener. Switching this to https would
+            # require BACKEND_CA_CERT_PATH below so the self-signed certificate
+            # still validates rather than being blindly trusted.
+            - name: I3X_BASE_URL
+              value: "http://i3x4influx.cloud.svc.cluster.local:8084"
+            # --- Downstream: UA Cloud Action OPC UA Web API ---
+            - name: OPCUA_WEBAPI_BASE_URL
+              value: "http://ua-cloudaction.cloud.svc.cluster.local:8082"
+            # Both backends accept the same demo credentials, so IOT_USERNAME /
+            # IOT_PASSWORD cover both. Use I3X_USERNAME / OPCUA_WEBAPI_USERNAME
+            # (and their passwords) if you split them.
+            - name: IOT_USERNAME
+              value: "${IOT_USERNAME}"
+            - name: IOT_PASSWORD
+              value: "${IOT_PASSWORD}"
+            # To call the backends over HTTPS with the self-signed certificate,
+            # point this at the CA so validation stays ON (preferred over
+            # ALLOW_UNTRUSTED_BACKEND_CERTS, which disables it entirely):
+            # - name: BACKEND_CA_CERT_PATH
+            #   value: "/tls/tls.crt"
+            # --- Inbound: credentials MCP clients must present to this server ---
+            # Without these the endpoint is unauthenticated and anyone who can
+            # reach it can read the entire plant. The server warns at startup.
+            - name: MCP_USERNAME
+              value: "${IOT_USERNAME}"
+            - name: MCP_PASSWORD
+              value: "${IOT_PASSWORD}"
+            # Caps items per tool result so one broad browse cannot crowd out
+            # the rest of the model's context window.
+            - name: MCP_MAX_RESULTS
+              value: "200"
+          # /health is deliberately exempt from authentication so these probes
+          # work; they use the HTTP port so a self-signed certificate cannot
+          # cause a healthy container to be restarted.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ua-cloudai
+  namespace: cloud
+spec:
+  # ClusterIP: the plain-HTTP MCP port is never bound on the node IP.
+  type: ClusterIP
+  selector:
+    app: ua-cloudai
+  ports:
+    - name: http
+      port: 5050
+      targetPort: 5000
+---
+# ---------------------------------------------------------------------------
+# TLS termination for the .NET web services
+#
+# Every service above is a ClusterIP listening on plain HTTP, so none of them is
+# reachable from the LAN. This Ingress is the ONLY way in from outside, and it
+# speaks HTTPS only - so the Basic credentials those services accept can never
+# cross the network in cleartext.
+#
+# Why TLS is terminated here rather than inside each app: UA Cloud Action, the
+# UA Cloud Library and i3X all call UseHttpsRedirection() unconditionally. If
+# they bound an HTTPS port themselves they would answer every plain-HTTP request
+# with a 307 redirect to HTTPS - including requests from other pods, which do
+# not trust the self-signed certificate. Terminating at the ingress keeps the
+# in-cluster paths on clean HTTP while everything external is encrypted.
+#
+# Traefik ships with k3s and is enabled by default, so there is nothing extra to
+# install. Requires the "cloud-services-tls" Secret (see above).
+#
+# Reach the services at:
+#   https://<device-ip>/cloudaction      UA Cloud Action UI + OPC UA Web API
+#   https://<device-ip>/cloudlibrary     UA Cloud Library UI + REST
+#   https://<device-ip>/i3x              i3X REST API
+#   https://<device-ip>/mcp              UA Cloud AI MCP endpoint
+#
+# Verify nothing listens on the old plain-HTTP ports:
+#   curl -sS --max-time 5 http://<device-ip>:8084/v1/info   # must fail
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cloud-services
+  namespace: cloud
+  annotations:
+    # Terminate TLS here and redirect any plain-HTTP request to HTTPS.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Strip the path prefix before forwarding, so each app still sees the
+    # request paths it expects (for example /v1/info rather than /i3x/v1/info).
+    traefik.ingress.kubernetes.io/router.middlewares: cloud-strip-prefix@kubernetescrd
+spec:
+  tls:
+    - secretName: cloud-services-tls
+  rules:
+    - http:
+        paths:
+          - path: /cloudaction
+            pathType: Prefix
+            backend:
+              service:
+                name: ua-cloudaction
+                port:
+                  number: 8082
+          - path: /cloudlibrary
+            pathType: Prefix
+            backend:
+              service:
+                name: ua-cloudlibrary
+                port:
+                  number: 8083
+          - path: /i3x
+            pathType: Prefix
+            backend:
+              service:
+                name: i3x4influx
+                port:
+                  number: 8084
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: ua-cloudai
+                port:
+                  number: 5050
+---
+# Strips the /cloudaction, /cloudlibrary, /i3x and /mcp prefixes added above.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-prefix
+  namespace: cloud
+spec:
+  stripPrefix:
+    prefixes:
+      - /cloudaction
+      - /cloudlibrary
+      - /i3x
+      - /mcp

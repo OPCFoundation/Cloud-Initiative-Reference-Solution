@@ -29,6 +29,10 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [Automatic Certificate Provisioning (GDS Server Push)](#automatic-certificate-provisioning-gds-server-push)
   - [What Happens](#what-happens)
   - [Using It Manually](#using-it-manually)
+- [Enabling TLS](#enabling-tls)
+  - [Creating the certificate](#creating-the-certificate)
+  - [Using it](#using-it)
+  - [Rotating or replacing it](#rotating-or-replacing-it)
 - [Accessing the Web UIs](#accessing-the-web-uis)
 - [Managing the Cluster with Portainer](#managing-the-cluster-with-portainer)
   - ["Your Portainer instance timed out for security purposes"](#your-portainer-instance-timed-out-for-security-purposes)
@@ -41,6 +45,9 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
 - [UA Data Processor (PCF and Battery Passport)](#ua-data-processor-pcf-and-battery-passport)
 - [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x)
   - [Calling the API](#calling-the-api)
+- [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp)
+  - [Connecting Claude Desktop](#connecting-claude-desktop)
+  - [Trying it without an AI client](#trying-it-without-an-ai-client)
 - [Pre-Provisioned Grafana Dashboards](#pre-provisioned-grafana-dashboards)
   - [Reading the Production Line OEE Dashboard](#reading-the-production-line-oee-dashboard)
   - [Production Shifts and Choosing the Grafana Time Range](#production-shifts-and-choosing-the-grafana-time-range)
@@ -210,11 +217,12 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | **telegraf** | `cloud` | `telegraf:1.39-alpine` | — |
 | **influxdb** | `cloud` | `influxdb:2.9` | **8086 (UI/API)** |
 | **grafana** | `cloud` | `grafana/grafana:13.1.1` | **3000 (UI)** |
-| **ua-cloudaction** | `cloud` | `ghcr.io/opcfoundation/ua-cloudaction:main` | **8082 (UI/Web API)** |
-| **ua-cloudlibrary** | `cloud` | `ghcr.io/opcfoundation/ua-cloudlibrary:latest` | **8083 (UI/REST)** |
+| **ua-cloudaction** | `cloud` | `ghcr.io/opcfoundation/ua-cloudaction:main` | 8082 (ClusterIP; HTTPS via ingress) |
+| **ua-cloudlibrary** | `cloud` | `ghcr.io/opcfoundation/ua-cloudlibrary:latest` | 8083 (ClusterIP; HTTPS via ingress) |
 | **cloudlib-postgres** | `cloud` | `postgres:17.6-alpine` | 5432 (ClusterIP only) |
 | **ua-dataprocessor** | `cloud` | `ghcr.io/opcfoundation/ua-dataprocessor:main` | — |
-| **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | **8084 (i3X REST API)** |
+| **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | 8084 (ClusterIP; HTTPS via ingress) |
+| **ua-cloudai** | `cloud` | `ghcr.io/opcfoundation/ua-cloudai:main` | 5050 (ClusterIP; HTTPS via ingress) |
 | **portainer** | `cloud` | `portainer/portainer-ce:2.44.0` | **9443 (HTTPS UI)**, 9000, 8000 |
 
 **What each component does**
@@ -280,12 +288,19 @@ end-to-end pipeline from industrial protocols to a time-series database.
   API, so clients can browse the data as an **ISA-95 hierarchy** and follow typed
   relationships instead of writing Flux. See
   [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x).
+- **ua-cloudai** — *UA Cloud AI*, an **[MCP](https://modelcontextprotocol.io)
+  server** that makes the plant available to agentic AI applications such as
+  Claude Desktop or VS Code. It does not read the historian itself; it fronts the
+  **i3X API** and **UA Cloud Action's OPC UA Web API** and presents them as 14
+  tools. It is **read-only** — there is no write, method-call or actuation path.
+  See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp).
 
 **Configuration resources**
 
 | Resource | Kind | Purpose |
 |---|---|---|
 | `influxdb-auth` | Secret | Holds the `INFLUX_TOKEN` used by InfluxDB (admin), Telegraf (write), Grafana (query), and UA Cloud Action (query). Supplied at deploy time via `${INFLUX_TOKEN}`. |
+| `cloud-services-tls` | Secret | Certificate and key used by the .NET services to serve HTTPS. **Created manually before applying `cloud.yaml`** — see [Enabling TLS](#enabling-tls). |
 | `telegraf-conf` | ConfigMap | Telegraf configuration (MQTT inputs + InfluxDB output). |
 | `mosquitto-conf` | ConfigMap | Mosquitto broker configuration (TLS listener, authentication, persistence). |
 | `ua-cloudpublisher-settings` | ConfigMap | Seeds the Publisher's `settings.json` (broker connection, topics, metadata) and `persistency.json` (published nodes for the simulated line) on first start. |
@@ -381,6 +396,11 @@ kubectl get nodes -A
    envsubst '${IOT_USERNAME} ${IOT_PASSWORD} ${INFLUX_TOKEN}' < cloud.yaml | kubectl apply -f -
    envsubst '${IOT_USERNAME} ${IOT_PASSWORD} ${INFLUX_TOKEN}' < edge.yaml  | kubectl apply -f -
    ```
+
+   > ⚠️ **Create the TLS certificate first.** Several services mount a
+   > `cloud-services-tls` Secret to serve HTTPS. It is **not** created by
+   > `cloud.yaml`, so if you skip this those pods stay in `ContainerCreating`
+   > waiting for it. See [Enabling TLS](#enabling-tls) — it is three commands.
 
    > `envsubst` is part of the `gettext` package (`sudo apt install -y gettext-base`).
    > Keep the values you chose — you'll reuse `IOT_USERNAME` / `IOT_PASSWORD` to
@@ -815,6 +835,126 @@ trust step.
 > which is appropriate for this reference deployment but should be reviewed
 > against your PKI policy in production.
 
+## Enabling TLS
+
+Most services in this solution authenticate with **HTTP Basic**, which sends
+reversible credentials on **every single request**. Over plain HTTP anyone on the
+network path can read and replay them, so the four .NET services are **not
+exposed on the node at all**. They are `ClusterIP` only, and the single way in
+from outside is a **TLS-terminating Traefik ingress**:
+
+| Service | In-cluster (ClusterIP, HTTP) | External (HTTPS via ingress) |
+|---|---|---|
+| UA Cloud Action | `ua-cloudaction:8082` | `https://<device-ip>/cloudaction` |
+| UA Cloud Library | `ua-cloudlibrary:8083` | `https://<device-ip>/cloudlibrary` |
+| i3X for InfluxDB | `i3x4influx:8084` | `https://<device-ip>/i3x` |
+| UA Cloud AI (MCP) | `ua-cloudai:5050` | `https://<device-ip>/mcp` |
+
+Because the HTTP ports are `ClusterIP`, k3s never binds them on the node IP — so
+there is no plain-HTTP port to reach from the LAN, and no way to send credentials
+in the clear even by mistake.
+
+> ℹ️ **Why TLS is terminated at the ingress rather than inside each app.** UA
+> Cloud Action, the UA Cloud Library and i3X all call `UseHttpsRedirection()`
+> unconditionally. If they bound an HTTPS port themselves, they would answer
+> *every* plain-HTTP request with a `307` redirect to HTTPS — including requests
+> from other pods, which do not trust the self-signed certificate. The UA Data
+> Processor's Digital Product Passport uploads would fail with
+> `AuthenticationException: UntrustedRoot`. Terminating at the ingress keeps the
+> in-cluster paths on clean HTTP while everything external is encrypted.
+
+Traefik ships with k3s and is enabled by default, so there is nothing extra to
+install.
+
+### Creating the certificate
+
+The `cloud-services-tls` Secret is **not** created by `cloud.yaml`; generate it
+before applying the manifests. For a reference deployment a self-signed
+certificate is fine:
+
+```bash
+cd ~
+
+# Certificate valid for the device's own IP. The subjectAltName matters:
+# without it, modern clients reject the certificate even if the CN matches.
+IP=$(hostname -I | awk '{print $1}')
+openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=$IP" \
+  -addext "subjectAltName=IP:$IP,DNS:localhost"
+
+# Kestrel loads a PKCS#12 bundle, so convert the pair.
+openssl pkcs12 -export -out tls.pfx -inkey tls.key -in tls.crt \
+  -passout pass:changeit
+
+kubectl create secret generic cloud-services-tls -n cloud \
+  --from-file=tls.crt=tls.crt \
+  --from-file=tls.key=tls.key \
+  --from-file=tls.pfx=tls.pfx \
+  --from-literal=pfx-password=changeit
+```
+
+Then remove the private key material from the device, keeping only `tls.crt` to
+hand out as the trust anchor:
+
+```bash
+shred -u tls.key tls.pfx
+```
+
+### Using it
+
+Browsers will warn on first visit because the certificate is self-signed — that
+warning is expected here, but it is also exactly what a real
+man-in-the-middle looks like, so do not train yourself to click through it on
+anything that matters. For command-line clients pass `-k`:
+
+```bash
+curl -k https://<device-ip>/i3x/v1/info
+```
+
+To verify properly instead of skipping the check, use the certificate you kept:
+
+```bash
+curl --cacert tls.crt https://<device-ip>/i3x/v1/info
+```
+
+Confirm the plain-HTTP ports really are unreachable from the LAN — each of these
+should fail to connect rather than return data:
+
+```bash
+curl -sS --max-time 5 http://<device-ip>:8082/    # UA Cloud Action
+curl -sS --max-time 5 http://<device-ip>:8083/    # UA Cloud Library
+curl -sS --max-time 5 http://<device-ip>:8084/v1/info  # i3X
+curl -sS --max-time 5 http://<device-ip>:5050/health   # UA Cloud AI
+```
+
+From *inside* the cluster those same services are still plain HTTP, which is what
+keeps the internal call paths working:
+
+```bash
+kubectl run -n cloud probe --rm -it --restart=Never --image=curlimages/curl -- \
+  curl -sS http://i3x4influx:8084/v1/info -u "$IOT_USERNAME:$IOT_PASSWORD"
+```
+
+### Rotating or replacing it
+
+```bash
+kubectl delete secret cloud-services-tls -n cloud
+# ...re-create as above. Traefik picks the new certificate up automatically,
+# because it reads the Secret rather than mounting it into each pod.
+```
+
+> ⚠️ **A self-signed certificate encrypts traffic but does not prove identity.**
+> It stops passive eavesdropping on your credentials, which is the main risk on a
+> shared LAN. It does **not** stop an active attacker who can intercept and
+> present their own certificate, because nothing independently vouches for this
+> one. Issue certificates from your own CA for anything beyond a demonstration.
+
+> ℹ️ **Not everything is covered.** Grafana, InfluxDB, MQTT Explorer and the
+> Portainer HTTP ports still serve plain HTTP, and each is configured
+> differently. Mosquitto already uses TLS on `8883`. See the
+> [STRIDE analysis](#security-analysis-stride) for what that leaves exposed.
+
 ## Accessing the Web UIs
 
 Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
@@ -827,10 +967,17 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **InfluxDB** | `http://<device-ip>:8086` | Time-series UI, Data Explorer, and dashboards. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (org `iot`, bucket `mqtt`). |
 | **Portainer** | `https://<device-ip>:9443` | Kubernetes management UI for the K3s cluster. On first access you set the admin password (see *Managing the Cluster with Portainer*). |
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
-| **UA Cloud Action** | `http://<device-ip>:8082` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
+| **UA Cloud Action** | `https://<device-ip>/cloudaction` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
-| **UA Cloud Library** | `http://<device-ip>:8083` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **i3X for InfluxDB** | `http://<device-ip>:8084/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
+| **UA Cloud Library** | `https://<device-ip>/cloudlibrary` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
+| **i3X for InfluxDB** | `https://<device-ip>/i3x/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
+| **UA Cloud AI** | `https://<device-ip>/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
+
+> 🔒 **These four are HTTPS-only from outside the cluster.** UA Cloud Action, UA
+> Cloud Library, i3X and UA Cloud AI are `ClusterIP` services reached through a
+> TLS-terminating ingress, so their plain-HTTP ports are **not** bound on the
+> node IP at all and your `IOT_USERNAME` / `IOT_PASSWORD` cannot be sent in
+> cleartext by accident. See [Enabling TLS](#enabling-tls).
 
 To keep both UIs reachable on the single node,
  **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
@@ -1028,7 +1175,7 @@ Running your own instance also means DPPs and any proprietary models stay
 stack keeps working with no dependency on the public Internet (see the
 air-gapped notes under *Updating the Container Images*).
 
-Browse to `http://<device-ip>:8083`. The UI lets you search and filter the stored
+Browse to `https://<device-ip>/cloudlibrary`. The UI lets you search and filter the stored
 models, inspect their metadata and namespaces, download them, and upload your
 own. The same data is available programmatically through a REST API.
 
@@ -1065,7 +1212,7 @@ deployment.
 ### First Login: Register with Your `IOT_USERNAME`
 
 The Cloud Library has **no account until you create one**. On first use, browse to
-`http://<device-ip>:8083`, choose **Register**, and sign up with:
+`https://<device-ip>/cloudlibrary`, choose **Register**, and sign up with:
 
 | Field | Value |
 |---|---|
@@ -1137,8 +1284,8 @@ That is the same argument as OPC UA at the edge, applied to the query layer.
 
 ### Calling the API
 
-The API is at `http://<device-ip>:8084`, and it ships a **built-in Swagger UI at
-`http://<device-ip>:8084/swagger`** — the easiest way to explore it. The Swagger
+The API is at `https://<device-ip>/i3x`, and it ships a **built-in Swagger UI at
+`https://<device-ip>/i3x/swagger`** — the easiest way to explore it. The Swagger
 page loads without credentials, but press **Authorize** and enter your
 `IOT_USERNAME` / `IOT_PASSWORD` before invoking anything, or every call returns
 `401`.
@@ -1210,6 +1357,85 @@ curl -s -u "$IOT_USERNAME:$IOT_PASSWORD" \
 > production, prefer OAuth2 by setting `I3X_OAUTH2_AUTHORITY`,
 > `I3X_OAUTH2_AUDIENCE` and `I3X_OAUTH2_ISSUER` — Basic auth over plain HTTP
 > sends credentials in the clear on every call.
+
+## Asking Questions with AI (MCP)
+
+Everything above assumes a human driving a UI or writing a query. **UA Cloud AI**
+removes that assumption: it is an
+**[MCP](https://modelcontextprotocol.io) (Model Context Protocol) server**, the
+open standard agentic AI applications use to reach external systems. Point a
+model at it and you can ask *"which station had the lowest OEE last shift, and
+what was its downtime?"* in plain language.
+
+It does **not** query the historian itself. It fronts the two APIs this solution
+already exposes and presents them as **14 tools**:
+
+| Group | Tools | What it is good for |
+|---|---|---|
+| **Orientation** | `describe_available_data`, `check_connectivity` | Explains the two interfaces and which to use; reports each backend separately when something is wrong. |
+| **i3X** (9 tools) | `i3x_browse_hierarchy`, `i3x_get_related_objects`, `i3x_read_current_values`, `i3x_read_history`, … | The **semantic graph** — walking the ISA-95 hierarchy and following typed relationships. |
+| **OPC UA Web API** (3 tools) | `opcua_browse_nodes`, `opcua_read_values`, `opcua_read_history` | The **raw address space** — reading specific nodes by `NodeId`. |
+
+> ℹ️ **Why an orientation tool?** The two APIs overlap but their identifiers are
+> **not interchangeable** — i3X uses `elementId`, OPC UA uses `NodeId`. A model
+> that guesses will silently pick the wrong one, so `describe_available_data`
+> tells it which interface answers which kind of question before it starts.
+
+### Connecting Claude Desktop
+
+Claude Desktop speaks **stdio**, launching the server itself. Add this to
+`claude_desktop_config.json` (Settings → Developer → Edit Config), using
+`mcp-remote` to bridge to the in-cluster HTTPS endpoint:
+
+```json
+{
+  "mcpServers": {
+    "ua-cloudai": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://<device-ip>/mcp",
+        "--header", "Authorization:Basic <base64 of IOT_USERNAME:IOT_PASSWORD>"
+      ]
+    }
+  }
+}
+```
+
+Generate the header value with:
+
+```bash
+printf '%s' "$IOT_USERNAME:$IOT_PASSWORD" | base64
+```
+
+### Trying it without an AI client
+
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) lists and
+calls the tools by hand, which is the quickest way to confirm the server works:
+
+```bash
+npx @modelcontextprotocol/inspector
+```
+
+Set **Transport** to `Streamable HTTP`, **URL** to `https://<device-ip>/mcp`,
+and add the same `Authorization` header. You should see all 14 tools.
+
+Check it is running at all — `/health` needs no credentials:
+
+```bash
+curl -k https://<device-ip>/mcp/health
+# {"status":"ok"}
+```
+
+> ⚠️ The certificate is self-signed, hence `-k` above. Clients that cannot be
+> told to trust it will refuse to connect; distribute `tls.crt` as the trust
+> anchor, or use a certificate from your own CA. See [Enabling TLS](#enabling-tls).
+
+> 🔒 **UA Cloud AI is read-only by design.** It browses and reads; there is no
+> write, method-call or actuation path. An agent can analyse the plant but cannot
+> change it. Note that this is a *narrower* boundary than the rest of the
+> solution — UA Cloud Action and UA Cloud Commander *can* write back to the OPC UA
+> servers, which is what the feedback loop depends on.
 
 ## Pre-Provisioned Grafana Dashboards
 
@@ -1359,7 +1585,9 @@ and what to change before an internet-exposed or production deployment.
 > **Important:** the reference manifest is optimized for a self-contained,
 > single-node demo. It ships with convenience defaults (shared credentials, a
 > self-signed broker certificate generated at pod start, `LoadBalancer` services
-> bound to the node IP, and permissive TLS verification in Telegraf). These are
+> bound to the node IP, and permissive TLS verification in Telegraf). HTTPS is
+> available on the .NET services but uses a **self-signed** certificate and runs
+> **alongside** the still-open plain-HTTP ports. These are
 > **not** appropriate for production as-is — see
 > [Production Hardening Recommendations](#production-hardening-recommendations).
 
@@ -1383,7 +1611,13 @@ and what to change before an internet-exposed or production deployment.
       |                                                                                                  |
       |                                                       (publishes PCF / Battery Passport models)  v
       |                                                                            [UA Cloud Library :8083] --> [PostgreSQL :5432, ClusterIP]
-      |  Boundary B: operator <-> web UIs (:8080/:8081/:8082/:8083/:8086/:3000/:9443, basic auth) and APIs (:8084)        |
+      |
+      |   [AI agent / MCP client] --(MCP over HTTPS, basic auth)--> [UA Cloud AI] --+--> [i3X :8084]
+      |            Boundary D: AI client <-> plant (read-only)                      +--> [UA Cloud Action Web API :8082]
+      |
+      |  Boundary B: operator <-> web UIs (:8080/:8081/:8086/:3000/:9443, basic auth)
+      |              UA Cloud Action, Cloud Library, i3X and UA Cloud AI are ClusterIP-only and reachable
+      |              ONLY through the TLS-terminating ingress (https://<device-ip>/cloudaction|/cloudlibrary|/i3x|/mcp)   |
       +----------- Boundary C: node/cluster host (K3s + Portainer cluster-admin, hostPath volumes) -----------------------+
 ```
 
@@ -1396,7 +1630,12 @@ it), the broker's private key, the
 Portainer `cluster-admin` ServiceAccount token (full control of the cluster), and
 the K3s node itself (root of trust for all `hostPath` data). The **i3X API**
 (`:8084`) is a further read path to the same telemetry, so it inherits the value
-of the data it exposes.
+of the data it exposes. **UA Cloud AI** is a read path on top of
+*both* APIs, so it inherits the union of what they expose — and because it is
+driven in natural language, it lowers the expertise needed to exploit that access.
+Note also that **Boundary D extends outside the cluster entirely** whenever the
+MCP client is a hosted AI service, since tool results are sent onward for
+inference.
 
 ### STRIDE Threat Assessment
 
@@ -1418,6 +1657,8 @@ configuration. The residual risk is the part to act on: see
 - **Theft of the Publisher's CA key (`/publisher/pki/issuer/private`) lets an attacker mint a trusted certificate for any component**
 - **Anyone who can reach the UA Cloud Library UI (`:8083`) can self-register a working account and act as a legitimate user.**
 - An unauthenticated caller queries the **i3X API** (`:8084`) and reads the entire ISA-95 hierarchy and its values
+- **An unauthenticated caller reaches the MCP endpoint and uses UA Cloud AI as a ready-made interface to the whole plant**
+- **A malicious or compromised MCP client impersonates a legitimate agent, since the server cannot distinguish one Basic-authenticated caller from another**
 
 **Mitigations already in place**
 
@@ -1427,11 +1668,14 @@ configuration. The residual risk is the part to act on: see
 - OPC UA supports certificate exchange between Publisher/Commander and server
 - The Cloud Library requires an account to upload, and its API is authenticated with `ServiceUsername`/`ServicePassword`
 - The **i3X API fails closed**: with no Basic or OAuth2 credentials configured it returns `503` to every request rather than serving data anonymously
+- **UA Cloud Action, the Cloud Library, i3X and UA Cloud AI are not exposed on the node at all** — they are `ClusterIP` services reachable only through a TLS-terminating ingress, so their Basic credentials cannot cross the LAN in cleartext even by misconfiguration
+- **UA Cloud AI compares its inbound credentials in fixed time** (`CryptographicOperations.FixedTimeEquals`), so they cannot be recovered by timing its responses
+- **UA Cloud AI warns at startup** when Basic auth is enabled without TLS, or when it is left unauthenticated entirely
 
 **Residual risk / gaps**
 
 - Single shared credential set across all components (including Grafana/Portainer admin and the Web API)
-- Basic-auth credentials are only as safe as the transport (send over TLS in production)
+- **TLS is available but optional and self-signed**: the plain-HTTP ports remain open, and a self-signed certificate encrypts traffic without proving identity, so an active man-in-the-middle presenting their own certificate is not prevented
 - No per-service identities or mutual TLS (mTLS)
 - Broker does not authenticate clients by certificate
 - Any client that can publish to `commands` can drive Commander
@@ -1440,6 +1684,8 @@ configuration. The residual risk is the part to act on: see
 - **MQTT Explorer (`:4000`) has no authentication of its own, so anyone who can reach it can publish to any topic — including `commands`**
 - **Modbus TCP has no authentication whatsoever by protocol design** — the simulator (and any real Modbus device) trusts every caller
 - **The i3X API shares the same `IOT_USERNAME` / `IOT_PASSWORD` as everything else**, so it grants no separate identity and a single leaked credential opens it too
+- **UA Cloud AI reuses that same credential pair both inbound and outbound**, so one leak exposes the MCP endpoint and, through it, both backends
+- **The MCP endpoint serves anonymously if `MCP_USERNAME`/`MCP_PASSWORD` are left unset** — it warns loudly at startup, but nothing prevents it
 
 #### Tampering (integrity)
 
@@ -1470,7 +1716,9 @@ configuration. The residual risk is the part to act on: see
 - **Stored Digital Product Passports are not signed or provenance-checked, and because registration is open any account can upload one, so a passport carries no cryptographic proof of origin**
 - **PCF and Battery Passport results are published without a signature, so a consumer, recycler or regulator cannot verify they came from this pipeline**
 - **Modbus traffic is plaintext and unauthenticated**, so anything on the pod network can read or write the simulated device's registers
-- **i3X is a read-only projection, so it cannot alter stored telemetry** — but it is served over plain HTTP, so a man-in-the-middle could alter responses in flight and misrepresent the plant to a client
+- **i3X is a read-only projection, so it cannot alter stored telemetry** — and it is now reachable from outside only over HTTPS through the ingress, so responses can no longer be altered in flight by a passive network attacker
+- **UA Cloud AI cannot tamper with anything by design** — it exposes no write, method-call or actuation tool — but it can be *misled*: it faithfully relays whatever the backends return, so a compromised backend misrepresents the plant to the model
+- **A model acting on UA Cloud AI's output may drive changes through other paths** (an operator acting on its answer, or UA Cloud Action's feedback loop), so its read-only boundary does not by itself make downstream effects safe
 
 #### Repudiation (auditability)
 
@@ -1494,6 +1742,7 @@ configuration. The residual risk is the part to act on: see
 - **UA Data Processor does not retain the telemetry window or carbon-intensity figure behind each PCF, so a passport's figures are not independently reproducible**
 - No log shipping or retention policy
 - **i3X API queries are not attributably logged**, so there is no record of who browsed or exported the production data
+- **MCP tool calls are not attributably logged either**, so there is no record of which agent asked what — and because an AI client may issue many queries per question, this is the component most likely to read broadly across the plant with the least trace
 
 #### Information disclosure (confidentiality)
 
@@ -1507,6 +1756,8 @@ configuration. The residual risk is the part to act on: see
 - **Reading the Cloud Library's PostgreSQL database directly off `/cloudlib-postgres`, which exposes every stored Digital Product Passport and all account password hashes**
 - **Inferring production volumes, energy use and product composition from stored passports.**
 - **Reading the whole production hierarchy and its history through the i3X API**, which is designed to make exactly that convenient
+- **Extracting the plant's structure and history through UA Cloud AI in natural language**, which lowers the skill needed to do so — no Flux, no OPC UA knowledge and no API familiarity are required
+- **Leaking plant data to a third-party model provider**, since a hosted AI client sends tool results onward for inference
 
 **Mitigations already in place**
 
@@ -1515,6 +1766,8 @@ configuration. The residual risk is the part to act on: see
 - Credentials are supplied at apply time (not committed to git)
 - PostgreSQL is `ClusterIP` only, so it is not reachable from outside the cluster
 - Cloud Library passwords are stored as ASP.NET Identity hashes, not plaintext
+- **UA Cloud Action, the Cloud Library, i3X and UA Cloud AI can all be reached over HTTPS**, so credentials and returned data need not cross the network in cleartext (see [Enabling TLS](#enabling-tls))
+- **UA Cloud AI caps how much any one tool call returns** (`MCP_MAX_RESULTS`, default 200), so a single broad request cannot trivially export the whole address space
 
 **Residual risk / gaps**
 
@@ -1523,10 +1776,12 @@ configuration. The residual risk is the part to act on: see
 - Self-signed broker cert offers encryption but no server-identity assurance
 - **OPC UA private keys, including the GDS issuer (CA) key, are held unprotected in `Directory` stores on `hostPath` volumes** (see hardening item 10)
 - **The PostgreSQL data directory is an unencrypted `hostPath` and the database password is the shared `IOT_PASSWORD`**
-- **The Cloud Library is served over plain HTTP, so registration and login credentials cross the network in the clear**
-- All UIs are exposed on the node IP with no network policy
-- **The i3X API is served over plain HTTP with Basic auth**, so both the credentials and every value returned cross the network in the clear
-- **The i3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach `:8084` can enumerate the full API surface and read the server's capabilities before authenticating
+- **Traffic inside the cluster is still plain HTTP** — TLS stops at the ingress, so anything able to observe pod-to-pod traffic (or a compromised pod) still sees credentials and data in the clear; mTLS or a service mesh would be needed to close this
+- **The TLS certificate is self-signed**, so it provides encryption but no identity assurance, and users are trained to click through the browser warning
+- Grafana, InfluxDB, MQTT Explorer and Portainer's HTTP port are still exposed directly on the node IP without TLS
+- **The i3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach the ingress can enumerate the full API surface and read the server's capabilities before authenticating
+- **UA Cloud AI's `/health` endpoint is likewise unauthenticated**, confirming the service exists to an unauthenticated scanner (it returns no plant data)
+- **Tool results leave the cluster entirely** when the MCP client is a hosted AI service, which is a disclosure path no amount of in-cluster hardening addresses
 
 #### Denial of service (availability)
 
@@ -1540,6 +1795,7 @@ configuration. The residual risk is the part to act on: see
 - **Filling the disk by uploading large or numerous passports/nodesets to the Cloud Library**
 - **Exhausting InfluxDB with the Data Processor's repeated multi-day queries.**
 - Exhausting InfluxDB through the i3X API, whose `/v1/objects/history` and `/v1/subscriptions/stream` endpoints can each drive repeated backend queries
+- **Amplifying load through UA Cloud AI**, where a single natural-language question can fan out into many tool calls and therefore many backend queries — an agent retrying or looping does this without any attacker intent
 
 **Mitigations already in place**
 
@@ -1550,6 +1806,7 @@ configuration. The residual risk is the part to act on: see
 - The Modbus simulator declares CPU/memory `requests`/`limits`
 - The Data Processor polls on a fixed interval rather than continuously
 - i3X caches metadata (`I3X_METADATA_CACHE_SECONDS`) and bounds its browse and latest-value lookups to fixed time ranges rather than scanning the whole bucket
+- UA Cloud AI caps results per call (`MCP_MAX_RESULTS`) and bounds every backend request with a timeout (`HTTP_TIMEOUT_SECONDS`), so one tool call cannot hang indefinitely
 
 **Residual risk / gaps**
 
@@ -1560,6 +1817,7 @@ configuration. The residual risk is the part to act on: see
 - The broker persists to `hostPath` (`/mosquitto`), reducing message loss on restart though the single node remains a SPOF
 - UA Cloud Action's rate limit still needs tuning for your environment
 - **No rate limit or result cap on the i3X API**, so a client may open many concurrent `stream` subscriptions or request unbounded history ranges
+- **UA Cloud AI has no rate limiter**, so while each individual call is capped, nothing bounds how many calls an agent makes per second
 
 #### Elevation of privilege (authorization)
 
@@ -1579,6 +1837,7 @@ configuration. The residual risk is the part to act on: see
 - `nodeSelector` pins workloads to Linux
 - The importer Job uses `restartPolicy: Never`
 - The Cloud Library separates ordinary user accounts from the `ServiceUsername` API account
+- **UA Cloud AI is read-only**: it exposes no write, method-call or actuation tool, so an agent reaching it cannot use it to change the plant — unlike UA Cloud Action and Commander, which deliberately can
 
 **Residual risk / gaps**
 
@@ -1591,6 +1850,7 @@ configuration. The residual risk is the part to act on: see
 - Commander bridges IT→OT with method-call/write capability and no fine-grained authorization
 - No RBAC scoping for the workloads
 - **i3X authorization is all-or-nothing**: any caller who authenticates sees the entire hierarchy, with no per-site, per-line or per-tag scoping
+- **UA Cloud AI inherits that all-or-nothing scope and cannot narrow it**, so every agent sees everything both backends expose; its read-only boundary limits *what kind* of access is possible, not *how much*
 
 
 ### Production Hardening Recommendations
@@ -1607,7 +1867,14 @@ deployment. Prioritize the items marked **(High)**.
    the self-signed, pod-generated broker certificate with one from a trusted CA
    (e.g. via **cert-manager**). Remove `insecure_skip_verify = true` from the
    Telegraf MQTT inputs and pin the broker CA so man-in-the-middle attacks are
-   prevented. Enable TLS on the web UIs (terminate at an ingress).
+   prevented. The four .NET services are already `ClusterIP`-only behind a
+   TLS-terminating ingress (see [Enabling TLS](#enabling-tls)), but with a
+   **self-signed** certificate that encrypts without proving identity — replace
+   it with one from your own CA, ideally issued and renewed automatically by
+   **cert-manager**. Grafana, InfluxDB, MQTT Explorer and Portainer's HTTP port
+   are still exposed directly on the node IP without TLS; move them behind the
+   same ingress. Consider mTLS or a service mesh for pod-to-pod traffic, which
+   is still plain HTTP.
 3. **Enable mutual TLS (mTLS) or per-client auth on the broker.** Configure
    Mosquitto to authenticate publishers/subscribers by client certificate in
    addition to username/password, and use ACLs to restrict which topics each
@@ -1623,9 +1890,10 @@ deployment. Prioritize the items marked **(High)**.
    working account (see
    [Registration and the Disabled Email Verification](#registration-and-the-disabled-email-verification)).
    For production, set `EmailSenderAPIKey`, `RegistrationEmailFrom` and
-   `RegistrationEmailReplyTo` so accounts are tied to a verified address, front
-   the UI with an authenticating proxy or SSO, and serve it over TLS — today the
-   registration and login forms are submitted over plain HTTP. Also give the
+   `RegistrationEmailReplyTo` so accounts are tied to a verified address, and
+   front the UI with an authenticating proxy or SSO. Registration and login are
+   already HTTPS-only from outside the cluster, since the service is reachable
+   only through the ingress. Also give the
    Cloud Library API its own `ServiceUsername`/`ServicePassword` instead of
    reusing the shared `IOT_*` credentials, and give its PostgreSQL database a
    dedicated password.
@@ -1635,26 +1903,40 @@ deployment. Prioritize the items marked **(High)**.
    add Kubernetes **`NetworkPolicy`** rules so pods can only reach the peers they
    need.
 7. **Secure the i3X API (High).** The i3X server exposes the whole production
-   hierarchy and its history to any caller who authenticates, over **plain HTTP
-   with Basic auth** — so credentials and data both cross the network in the
-   clear. Terminate TLS in front of it, and switch from Basic auth to **OAuth2**
+   hierarchy and its history to any caller who authenticates. It is now
+   `ClusterIP`-only and reachable externally just over HTTPS through the ingress,
+   but the certificate is self-signed — use a CA-issued one.
+   Switch from Basic auth to **OAuth2**
    by setting `I3X_OAUTH2_AUTHORITY`, `I3X_OAUTH2_AUDIENCE` and
    `I3X_OAUTH2_ISSUER`, which gives per-client identities and expiring tokens
    instead of one shared password. Set `I3X_CORS_ORIGINS` to the specific origins
    that need browser access rather than leaving it open, and put a rate limit in
    front of `/v1/objects/history` and `/v1/subscriptions/stream`, neither of which is
    bounded today.
-8. **Harden the pods.** Add a `securityContext` (`runAsNonRoot: true`,
+8. **Control what the AI layer can reach (High).** UA Cloud AI turns the plant
+   into a natural-language query surface, which is useful precisely because it
+   removes the expertise barrier — and that cuts both ways. Always set
+   `MCP_USERNAME`/`MCP_PASSWORD` (it serves anonymously without them), keep it
+   reachable only through the HTTPS ingress, and give it credentials scoped to
+   only the data an agent should see rather than the shared `IOT_*` pair. Be
+   deliberate about
+   **where tool results go**: a hosted AI client sends them outside your network
+   for inference, so treat that as an export of plant data and check it against
+   your data-handling policy. Add a rate limit in front of the endpoint, since
+   one question can fan out into many backend queries. Its **read-only** design
+   means an agent cannot actuate anything directly — but do not over-rely on
+   that, because an operator acting on its output can.
+9. **Harden the pods.** Add a `securityContext` (`runAsNonRoot: true`,
    `readOnlyRootFilesystem: true`, drop Linux capabilities,
    `allowPrivilegeEscalation: false`) and set CPU/memory `requests`/`limits` to
    contain resource-exhaustion and blast radius.
-9. **Protect data at rest.** Enable encryption at rest for the node's disk
+10. **Protect data at rest.** Enable encryption at rest for the node's disk
    (`/influxdb2`, `/cloudlib-postgres` and the other `hostPath` volumes) and for
    Kubernetes Secrets (e.g. a KMS provider or an encrypted etcd). Replace ad-hoc
    `hostPath` volumes with managed `PersistentVolumeClaims` where possible. Note
    that `/cloudlib-postgres` holds the Cloud Library's account password hashes
    **and** every nodeset uploaded to it.
-10. **Encrypt the OPC UA private keys at rest (High).** Every OPC UA component in
+11. **Encrypt the OPC UA private keys at rest (High).** Every OPC UA component in
    this stack holds its application instance certificate in a `Directory`
    certificate store, so the **private key sits unencrypted on the Pi's
    filesystem** under `<component>/pki/own/private/*.pfx`:
@@ -1720,21 +2002,21 @@ deployment. Prioritize the items marked **(High)**.
    > certificates can be inspected with `ls` and `openssl` while learning the
    > system. That trade-off is appropriate for a reference deployment and
    > inappropriate for production.
-11. **Add auditing and monitoring.** Ship component and access logs to a central,
+12. **Add auditing and monitoring.** Ship component and access logs to a central,
    tamper-evident store; enable Kubernetes audit logging; and add alerting on
    authentication failures, pod restarts, and disk usage.
-12. **Manage capacity and availability.** Set InfluxDB retention policies to bound
+13. **Manage capacity and availability.** Set InfluxDB retention policies to bound
     growth, back up `/influxdb2` regularly, and consider multi-node/HA for the
     broker and database to remove the single-point-of-failure.
-13. **Keep software patched.** Pin and regularly update the container image
+14. **Keep software patched.** Pin and regularly update the container image
      versions, apply OS/K3s security updates, and scan images for known
      vulnerabilities as part of your release process.
-14. **Scope Portainer's cluster access (High).** The demo binds Portainer to the
+15. **Scope Portainer's cluster access (High).** The demo binds Portainer to the
     built-in `cluster-admin` role. For production, grant it a least-privilege
     `Role`/`ClusterRole` limited to the namespaces and resources operators
     actually manage, protect its UI behind the ingress, and enforce strong,
     per-user Portainer accounts (not the shared credentials).
-15. **Authorize and throttle the command/control path.** Restrict who can publish
+16. **Authorize and throttle the command/control path.** Restrict who can publish
     to the `commands` topic (broker ACLs) and validate/allow-list the OPC UA
     methods and nodes UA Cloud Commander may Write/Call. UA Cloud Action includes a **built-in rate limiter** on its actuation, so a faulty threshold
     or spoofed value cannot drive OT devices uncontrollably; tune its limit for
