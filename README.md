@@ -845,10 +845,10 @@ from outside is a **TLS-terminating Traefik ingress**:
 
 | Service | In-cluster (ClusterIP, HTTP) | External (HTTPS via ingress) |
 |---|---|---|
-| UA Cloud Action | `ua-cloudaction:8082` | `https://<device-ip>/cloudaction` |
-| UA Cloud Library | `ua-cloudlibrary:8083` | `https://<device-ip>/cloudlibrary` |
-| i3X for InfluxDB | `i3x4influx:8084` | `https://<device-ip>/i3x` |
-| UA Cloud AI (MCP) | `ua-cloudai:5050` | `https://<device-ip>/mcp` |
+| UA Cloud Action | `ua-cloudaction:8082` | `https://cloudaction.plant.local` |
+| UA Cloud Library | `ua-cloudlibrary:8083` | `https://cloudlibrary.plant.local` |
+| i3X for InfluxDB | `i3x4influx:8084` | `https://i3x.plant.local` |
+| UA Cloud AI (MCP) | `ua-cloudai:5050` | `https://cloudai.plant.local` |
 
 Because the HTTP ports are `ClusterIP`, k3s never binds them on the node IP — so
 there is no plain-HTTP port to reach from the LAN, and no way to send credentials
@@ -863,6 +863,25 @@ in the clear even by mistake.
 > `AuthenticationException: UntrustedRoot`. Terminating at the ingress keeps the
 > in-cluster paths on clean HTTP while everything external is encrypted.
 
+> ℹ️ **Why hostnames rather than paths** (`/cloudlibrary`, `/i3x`, …). These apps
+> emit **root-relative** asset URLs — `~/css/site.css` renders as `/css/site.css`
+> — and none of them calls `UsePathBase`. Behind a path prefix the HTML loads but
+> every stylesheet and script `404`s, leaving the UIs unstyled. Giving each app
+> its own hostname keeps its root path intact.
+
+### Making the hostnames resolve
+
+These names must point at the device. The simplest option is a hosts file entry
+on each machine that needs access:
+
+```
+192.168.1.50  cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
+```
+
+That file is `/etc/hosts` on Linux and macOS, and
+`C:\Windows\System32\drivers\etc\hosts` on Windows (edit as Administrator). Use
+your own DNS instead if you have one.
+
 Traefik ships with k3s and is enabled by default, so there is nothing extra to
 install.
 
@@ -875,30 +894,23 @@ certificate is fine:
 ```bash
 cd ~
 
-# Certificate valid for the device's own IP. The subjectAltName matters:
-# without it, modern clients reject the certificate even if the CN matches.
+# The subjectAltName must list every name you will browse to, or modern clients
+# reject the certificate even when the CN matches.
 IP=$(hostname -I | awk '{print $1}')
 openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
   -keyout tls.key -out tls.crt \
   -subj "/CN=$IP" \
-  -addext "subjectAltName=IP:$IP,DNS:localhost"
+  -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
 
-# Kestrel loads a PKCS#12 bundle, so convert the pair.
-openssl pkcs12 -export -out tls.pfx -inkey tls.key -in tls.crt \
-  -passout pass:changeit
-
-kubectl create secret generic cloud-services-tls -n cloud \
-  --from-file=tls.crt=tls.crt \
-  --from-file=tls.key=tls.key \
-  --from-file=tls.pfx=tls.pfx \
-  --from-literal=pfx-password=changeit
+kubectl create secret tls cloud-services-tls -n cloud \
+  --cert=tls.crt --key=tls.key
 ```
 
-Then remove the private key material from the device, keeping only `tls.crt` to
-hand out as the trust anchor:
+Then remove the private key from the device, keeping only `tls.crt` to hand out
+as the trust anchor:
 
 ```bash
-shred -u tls.key tls.pfx
+shred -u tls.key
 ```
 
 ### Using it
@@ -909,13 +921,13 @@ man-in-the-middle looks like, so do not train yourself to click through it on
 anything that matters. For command-line clients pass `-k`:
 
 ```bash
-curl -k https://<device-ip>/i3x/v1/info
+curl -k https://i3x.plant.local/v1/info
 ```
 
 To verify properly instead of skipping the check, use the certificate you kept:
 
 ```bash
-curl --cacert tls.crt https://<device-ip>/i3x/v1/info
+curl --cacert tls.crt https://i3x.plant.local/v1/info
 ```
 
 Confirm the plain-HTTP ports really are unreachable from the LAN — each of these
@@ -967,11 +979,11 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **InfluxDB** | `http://<device-ip>:8086` | Time-series UI, Data Explorer, and dashboards. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (org `iot`, bucket `mqtt`). |
 | **Portainer** | `https://<device-ip>:9443` | Kubernetes management UI for the K3s cluster. On first access you set the admin password (see *Managing the Cluster with Portainer*). |
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
-| **UA Cloud Action** | `https://<device-ip>/cloudaction` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
+| **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
-| **UA Cloud Library** | `https://<device-ip>/cloudlibrary` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **i3X for InfluxDB** | `https://<device-ip>/i3x/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
-| **UA Cloud AI** | `https://<device-ip>/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
+| **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
+| **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
+| **UA Cloud AI** | `https://cloudai.plant.local/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
 
 > 🔒 **These four are HTTPS-only from outside the cluster.** UA Cloud Action, UA
 > Cloud Library, i3X and UA Cloud AI are `ClusterIP` services reached through a
@@ -1175,7 +1187,7 @@ Running your own instance also means DPPs and any proprietary models stay
 stack keeps working with no dependency on the public Internet (see the
 air-gapped notes under *Updating the Container Images*).
 
-Browse to `https://<device-ip>/cloudlibrary`. The UI lets you search and filter the stored
+Browse to `https://cloudlibrary.plant.local`. The UI lets you search and filter the stored
 models, inspect their metadata and namespaces, download them, and upload your
 own. The same data is available programmatically through a REST API.
 
@@ -1212,7 +1224,7 @@ deployment.
 ### First Login: Register with Your `IOT_USERNAME`
 
 The Cloud Library has **no account until you create one**. On first use, browse to
-`https://<device-ip>/cloudlibrary`, choose **Register**, and sign up with:
+`https://cloudlibrary.plant.local`, choose **Register**, and sign up with:
 
 | Field | Value |
 |---|---|
@@ -1284,8 +1296,8 @@ That is the same argument as OPC UA at the edge, applied to the query layer.
 
 ### Calling the API
 
-The API is at `https://<device-ip>/i3x`, and it ships a **built-in Swagger UI at
-`https://<device-ip>/i3x/swagger`** — the easiest way to explore it. The Swagger
+The API is at `https://i3x.plant.local`, and it ships a **built-in Swagger UI at
+`https://i3x.plant.local/swagger`** — the easiest way to explore it. The Swagger
 page loads without credentials, but press **Authorize** and enter your
 `IOT_USERNAME` / `IOT_PASSWORD` before invoking anything, or every call returns
 `401`.
@@ -1394,7 +1406,7 @@ Claude Desktop speaks **stdio**, launching the server itself. Add this to
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "https://<device-ip>/mcp",
+        "https://cloudai.plant.local/mcp",
         "--header", "Authorization:Basic <base64 of IOT_USERNAME:IOT_PASSWORD>"
       ]
     }
@@ -1417,13 +1429,13 @@ calls the tools by hand, which is the quickest way to confirm the server works:
 npx @modelcontextprotocol/inspector
 ```
 
-Set **Transport** to `Streamable HTTP`, **URL** to `https://<device-ip>/mcp`,
+Set **Transport** to `Streamable HTTP`, **URL** to `https://cloudai.plant.local/mcp`,
 and add the same `Authorization` header. You should see all 14 tools.
 
 Check it is running at all — `/health` needs no credentials:
 
 ```bash
-curl -k https://<device-ip>/mcp/health
+curl -k https://cloudai.plant.local/health
 # {"status":"ok"}
 ```
 
@@ -1617,7 +1629,7 @@ and what to change before an internet-exposed or production deployment.
       |
       |  Boundary B: operator <-> web UIs (:8080/:8081/:8086/:3000/:9443, basic auth)
       |              UA Cloud Action, Cloud Library, i3X and UA Cloud AI are ClusterIP-only and reachable
-      |              ONLY through the TLS-terminating ingress (https://<device-ip>/cloudaction|/cloudlibrary|/i3x|/mcp)   |
+      |              ONLY through the TLS-terminating ingress (cloudaction|cloudlibrary|i3x|cloudai .plant.local)   |
       +----------- Boundary C: node/cluster host (K3s + Portainer cluster-admin, hostPath volumes) -----------------------+
 ```
 

@@ -3025,23 +3025,17 @@ spec:
 # fine; on the device run:
 #
 #   cd ~
+#   IP=$(hostname -I | awk '{print $1}')
 #   openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
 #     -keyout tls.key -out tls.crt \
-#     -subj "/CN=$(hostname -I | awk '{print $1}')" \
-#     -addext "subjectAltName=IP:$(hostname -I | awk '{print $1}'),DNS:localhost"
+#     -subj "/CN=$IP" \
+#     -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
 #
-#   # Kestrel loads a PKCS#12 bundle, so convert the pair:
-#   openssl pkcs12 -export -out tls.pfx -inkey tls.key -in tls.crt \
-#     -passout pass:changeit
-#
-#   kubectl create secret generic cloud-services-tls -n cloud \
-#     --from-file=tls.crt=tls.crt \
-#     --from-file=tls.key=tls.key \
-#     --from-file=tls.pfx=tls.pfx \
-#     --from-literal=pfx-password=changeit
+#   kubectl create secret tls cloud-services-tls -n cloud \
+#     --cert=tls.crt --key=tls.key
 #
 #   # Keep the private key out of reach of other users on the device:
-#   shred -u tls.key tls.pfx   # (keep tls.crt to distribute as the trust anchor)
+#   shred -u tls.key   # (keep tls.crt to distribute as the trust anchor)
 #
 # Because the certificate is self-signed, browsers will warn on first visit and
 # API clients must be told to trust tls.crt. Replace it with a certificate from
@@ -3049,7 +3043,7 @@ spec:
 #
 # Regenerate and roll it out with:
 #   kubectl delete secret cloud-services-tls -n cloud   # then re-create as above
-#   kubectl rollout restart deployment -n cloud ua-cloudaction i3x4influx ua-cloudlibrary ua-cloudai
+#   # Traefik picks the new certificate up automatically - no pod restart needed.
 # ---------------------------------------------------------------------------
 ---
 apiVersion: apps/v1
@@ -3636,7 +3630,7 @@ spec:
             - "until nc -z i3x4influx 8084 && nc -z ua-cloudaction 8082; do echo waiting for backends; sleep 5; done"
       containers:
         - name: ua-cloudai
-          image: ghcr.io/opcfoundation/ua-cloudai:main
+          image: ghcr.io/barnstee/ua-cloudai:main
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
@@ -3730,16 +3724,33 @@ spec:
 # not trust the self-signed certificate. Terminating at the ingress keeps the
 # in-cluster paths on clean HTTP while everything external is encrypted.
 #
+# Why HOST-based routing rather than path prefixes (/cloudlibrary, /i3x, ...):
+# these apps emit ROOT-relative asset URLs (for example ~/css/site.css becomes
+# /css/site.css) and none of them calls UsePathBase. Behind a path prefix the
+# HTML would load but every stylesheet and script would 404, leaving the UIs
+# unstyled and broken. Giving each app its own hostname keeps its root intact.
+#
 # Traefik ships with k3s and is enabled by default, so there is nothing extra to
 # install. Requires the "cloud-services-tls" Secret (see above).
 #
-# Reach the services at:
-#   https://<device-ip>/cloudaction      UA Cloud Action UI + OPC UA Web API
-#   https://<device-ip>/cloudlibrary     UA Cloud Library UI + REST
-#   https://<device-ip>/i3x              i3X REST API
-#   https://<device-ip>/mcp              UA Cloud AI MCP endpoint
+# These hostnames must resolve to the device. The simplest option is a hosts
+# file entry on each machine that needs access (replace 192.168.1.50):
 #
-# Verify nothing listens on the old plain-HTTP ports:
+#   192.168.1.50  cloudaction.plant.local cloudlibrary.plant.local \
+#                 i3x.plant.local cloudai.plant.local
+#
+# On Linux/macOS that file is /etc/hosts; on Windows it is
+# C:\Windows\System32\drivers\etc\hosts. Point them at your own DNS instead if
+# you have one. The certificate must list these names - see the README, which
+# includes them in the subjectAltName.
+#
+# Reach the services at:
+#   https://cloudaction.plant.local    UA Cloud Action UI + OPC UA Web API
+#   https://cloudlibrary.plant.local   UA Cloud Library UI + REST
+#   https://i3x.plant.local            i3X REST API (and /swagger)
+#   https://cloudai.plant.local        UA Cloud AI MCP endpoint (/mcp)
+#
+# Verify the old plain-HTTP ports are no longer reachable from the LAN:
 #   curl -sS --max-time 5 http://<device-ip>:8084/v1/info   # must fail
 # ---------------------------------------------------------------------------
 apiVersion: networking.k8s.io/v1
@@ -3748,57 +3759,56 @@ metadata:
   name: cloud-services
   namespace: cloud
   annotations:
-    # Terminate TLS here and redirect any plain-HTTP request to HTTPS.
+    # Serve on the HTTPS entrypoint only. Traefik's "websecure" entrypoint is
+    # published on port 443 by the k3s ServiceLB.
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    # Strip the path prefix before forwarding, so each app still sees the
-    # request paths it expects (for example /v1/info rather than /i3x/v1/info).
-    traefik.ingress.kubernetes.io/router.middlewares: cloud-strip-prefix@kubernetescrd
 spec:
   tls:
     - secretName: cloud-services-tls
+      hosts:
+        - cloudaction.plant.local
+        - cloudlibrary.plant.local
+        - i3x.plant.local
+        - cloudai.plant.local
   rules:
-    - http:
+    - host: cloudaction.plant.local
+      http:
         paths:
-          - path: /cloudaction
+          - path: /
             pathType: Prefix
             backend:
               service:
                 name: ua-cloudaction
                 port:
                   number: 8082
-          - path: /cloudlibrary
+    - host: cloudlibrary.plant.local
+      http:
+        paths:
+          - path: /
             pathType: Prefix
             backend:
               service:
                 name: ua-cloudlibrary
                 port:
                   number: 8083
-          - path: /i3x
+    - host: i3x.plant.local
+      http:
+        paths:
+          - path: /
             pathType: Prefix
             backend:
               service:
                 name: i3x4influx
                 port:
                   number: 8084
-          - path: /mcp
+    - host: cloudai.plant.local
+      http:
+        paths:
+          - path: /
             pathType: Prefix
             backend:
               service:
                 name: ua-cloudai
                 port:
                   number: 5050
----
-# Strips the /cloudaction, /cloudlibrary, /i3x and /mcp prefixes added above.
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: strip-prefix
-  namespace: cloud
-spec:
-  stripPrefix:
-    prefixes:
-      - /cloudaction
-      - /cloudlibrary
-      - /i3x
-      - /mcp
