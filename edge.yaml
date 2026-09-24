@@ -197,6 +197,24 @@ spec:
   - name: secureocpp
     targetPort: 19521
     port: 19521
+  # NOTE: the web UI (8080) is deliberately NOT here. It is served over HTTPS
+  # through the ingress at the bottom of this file, because it accepts Basic
+  # credentials that must not cross the LAN in cleartext. The protocol ports
+  # above stay as they are: they are raw TCP spoken by field devices and by
+  # UA Cloud Publisher, not HTTP, so an HTTP ingress cannot carry them.
+  selector:
+    app: ua-edgetranslator
+---
+# Internal Service for the Edge Translator web UI. ClusterIP, so the plain-HTTP
+# port is never bound on the node; the ingress below is the only way in.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ua-edgetranslator-ui
+  namespace: edge
+spec:
+  type: ClusterIP
+  ports:
   - name: http
     targetPort: 8081
     port: 8080
@@ -777,7 +795,9 @@ metadata:
   name: ua-cloudpublisher
   namespace: edge
 spec:
-  type: LoadBalancer
+  # ClusterIP: this UI accepts Basic credentials, so it is reachable only over
+  # HTTPS through the ingress at the bottom of this file.
+  type: ClusterIP
   ports:
   - name: http
     targetPort: 8080
@@ -1618,3 +1638,70 @@ data:
         }
       }
     }
+---
+# ---------------------------------------------------------------------------
+# TLS termination for the edge web UIs
+#
+# UA Edge Translator and UA Cloud Publisher both authenticate with HTTP Basic,
+# which sends reversible credentials on every request. Their Services are
+# therefore ClusterIP, and this Ingress is the only way to reach them from
+# outside - over HTTPS only.
+#
+# This is a SECOND Ingress, separate from the one in cloud.yaml, because a
+# Kubernetes Ingress can only route to Services in its OWN namespace. It also
+# keeps edge.yaml deployable on its own, which is the point of the edge/cloud
+# split (see "Single Cluster vs. Split Edge/Cloud Deployment" in the README).
+#
+# Like the cloud services, routing is by HOSTNAME rather than path prefix:
+# these apps emit root-relative asset URLs and do not call UsePathBase, so a
+# path prefix would load the page but 404 every stylesheet and script.
+#
+# Requires an "edge-services-tls" Secret in the edge namespace. Kubernetes
+# Secrets are namespace-scoped, so the certificate created for the cloud
+# services has to be copied in - the README shows the one-line command.
+#
+# NOTE: only the HTTP user interfaces go through here. The OPC UA (4840),
+# LoRaWAN (5000/5001) and OCPP (19520/19521) ports remain plain TCP on the node,
+# because they are not HTTP and an HTTP ingress cannot carry them. OPC UA has
+# its own transport security (see the GDS section in the README); LoRaWAN and
+# OCPP have their own secure variants on 5001 and 19521.
+#
+# Reach the UIs at:
+#   https://translator.plant.local    UA Edge Translator
+#   https://publisher.plant.local     UA Cloud Publisher
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: edge-services
+  namespace: edge
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  tls:
+    - secretName: edge-services-tls
+      hosts:
+        - translator.plant.local
+        - publisher.plant.local
+  rules:
+    - host: translator.plant.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ua-edgetranslator-ui
+                port:
+                  number: 8080
+    - host: publisher.plant.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ua-cloudpublisher
+                port:
+                  number: 8081

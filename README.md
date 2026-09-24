@@ -208,8 +208,8 @@ end-to-end pipeline from industrial protocols to a time-series database.
 
 | Component | Namespace | Image | Ports |
 |---|---|---|---|
-| **ua-edgetranslator** | `edge` | `ghcr.io/opcfoundation/ua-edgetranslator:main` | 4840, 5000/5001, 19520/19521, **8080 (UI)** |
-| **ua-cloudpublisher** | `edge` | `ghcr.io/barnstee/ua-cloudpublisher:main` | **8081 (UI)** |
+| **ua-edgetranslator** | `edge` | `ghcr.io/opcfoundation/ua-edgetranslator:main` | 4840, 5000/5001, 19520/19521 (TCP on node); 8080 UI (ClusterIP; HTTPS via ingress) |
+| **ua-cloudpublisher** | `edge` | `ghcr.io/barnstee/ua-cloudpublisher:main` | 8081 (ClusterIP; HTTPS via ingress) |
 | **ua-cloudcommander** | `edge` | `ghcr.io/opcfoundation/ua-cloudcommander:main` | — |
 | **mes**, **assembly**, **test**, **packaging** | `munich` | `ghcr.io/digitaltwinconsortium/manufacturingontologies:main` | 4840 (each) |
 | **modbus-simulator** | `munich` | `python:3.12-slim` | 502 (Modbus TCP) |
@@ -376,11 +376,10 @@ kubectl get nodes -A
    curl -fsSLO https://raw.githubusercontent.com/OPCF-Members/Cloud-Initiative-Reference-Solution/main/cloud.yaml
    ```
 
-2. **Create the TLS certificate.** The four .NET services are reachable from
-   outside the cluster only over HTTPS, through an ingress that reads a
-   `cloud-services-tls` Secret. That Secret is **not** created by `cloud.yaml`,
-   and the ingress will not serve tls until it exists — so do this *before*
-   applying:
+2. **Create the TLS certificate.** Every .NET web UI and API in this solution is
+   reachable from outside the cluster only over HTTPS, through ingresses that
+   read a TLS Secret. Those Secrets are **not** created by the manifests, and the
+   ingresses will not serve TLS until they exist — so do this *before* applying:
 
    ```bash
    cd ~
@@ -391,13 +390,16 @@ kubectl get nodes -A
    openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
      -keyout tls.key -out tls.crt \
      -subj "/CN=$IP" \
-     -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
+     -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:translator.plant.local,DNS:publisher.plant.local,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
 
-   # The namespace must exist before the Secret can be created in it.
+   # The namespaces must exist before Secrets can be created in them.
    kubectl create namespace cloud --dry-run=client -o yaml | kubectl apply -f -
+   kubectl create namespace edge  --dry-run=client -o yaml | kubectl apply -f -
 
-   kubectl create secret tls cloud-services-tls -n cloud \
-     --cert=tls.crt --key=tls.key
+   # Secrets are namespace-scoped, so the same certificate goes in twice — once
+   # for each ingress.
+   kubectl create secret tls cloud-services-tls -n cloud --cert=tls.crt --key=tls.key
+   kubectl create secret tls edge-services-tls  -n edge  --cert=tls.crt --key=tls.key
 
    # Keep tls.crt to hand out as the trust anchor; the key is now in the cluster.
    shred -u tls.key
@@ -434,7 +436,7 @@ kubectl get nodes -A
    > with your device's):
    >
    > ```
-   > 192.168.1.50  cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
+   > 192.168.1.50  translator.plant.local publisher.plant.local cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
    > ```
    >
    > That file is `/etc/hosts` on Linux and macOS, and
@@ -877,20 +879,36 @@ trust step.
 
 Most services in this solution authenticate with **HTTP Basic**, which sends
 reversible credentials on **every single request**. Over plain HTTP anyone on the
-network path can read and replay them, so the four .NET services are **not
-exposed on the node at all**. They are `ClusterIP` only, and the single way in
-from outside is a **TLS-terminating Traefik ingress**:
+network path can read and replay them, so every .NET web UI and API in this
+solution is **not exposed on the node at all**. They are `ClusterIP` only, and
+the single way in from outside is a **TLS-terminating Traefik ingress**:
 
-| Service | In-cluster (ClusterIP, HTTP) | External (HTTPS via ingress) |
-|---|---|---|
-| UA Cloud Action | `ua-cloudaction:8082` | `https://cloudaction.plant.local` |
-| UA Cloud Library | `ua-cloudlibrary:8083` | `https://cloudlibrary.plant.local` |
-| i3X for InfluxDB | `i3x4influx:8084` | `https://i3x.plant.local` |
-| UA Cloud AI (MCP) | `ua-cloudai:5050` | `https://cloudai.plant.local` |
+| Service | Namespace | In-cluster (ClusterIP, HTTP) | External (HTTPS via ingress) |
+|---|---|---|---|
+| UA Edge Translator | `edge` | `ua-edgetranslator-ui:8080` | `https://translator.plant.local` |
+| UA Cloud Publisher | `edge` | `ua-cloudpublisher:8081` | `https://publisher.plant.local` |
+| UA Cloud Action | `cloud` | `ua-cloudaction:8082` | `https://cloudaction.plant.local` |
+| UA Cloud Library | `cloud` | `ua-cloudlibrary:8083` | `https://cloudlibrary.plant.local` |
+| i3X for InfluxDB | `cloud` | `i3x4influx:8084` | `https://i3x.plant.local` |
+| UA Cloud AI (MCP) | `cloud` | `ua-cloudai:5050` | `https://cloudai.plant.local` |
 
 Because the HTTP ports are `ClusterIP`, k3s never binds them on the node IP — so
 there is no plain-HTTP port to reach from the LAN, and no way to send credentials
 in the clear even by mistake.
+
+> ℹ️ **There are two Ingresses, one per namespace.** A Kubernetes Ingress can
+> only route to Services in its **own** namespace, so `cloud.yaml` and
+> `edge.yaml` each carry their own. That also keeps `edge.yaml` deployable on its
+> own, which is the point of the edge/cloud split.
+
+> ℹ️ **Only HTTP is routed this way.** The Edge Translator also listens for OPC
+> UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP (`19520`/`19521`). Those are raw
+> TCP, not HTTP, so an HTTP ingress cannot carry them and they remain on the node
+> IP. They have their own security: OPC UA uses certificate-based transport
+> security (see
+> [Automatic Certificate Provisioning](#automatic-certificate-provisioning-gds-server-push)),
+> and LoRaWAN and OCPP offer secure variants on `5001` and `19521`. MQTT is
+> already TLS on `8883`.
 
 > ℹ️ **Why TLS is terminated at the ingress rather than inside each app.** UA
 > Cloud Action, the UA Cloud Library and i3X all call `UseHttpsRedirection()`
@@ -913,7 +931,7 @@ These names must point at the device. The simplest option is a hosts file entry
 on each machine that needs access:
 
 ```
-192.168.1.50  cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
+192.168.1.50  translator.plant.local publisher.plant.local cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
 ```
 
 That file is `/etc/hosts` on Linux and macOS, and
@@ -939,10 +957,12 @@ IP=$(hostname -I | awk '{print $1}')
 openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
   -keyout tls.key -out tls.crt \
   -subj "/CN=$IP" \
-  -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
+  -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:translator.plant.local,DNS:publisher.plant.local,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
 
-kubectl create secret tls cloud-services-tls -n cloud \
-  --cert=tls.crt --key=tls.key
+# Kubernetes Secrets are namespace-scoped, so the same certificate is needed in
+# both namespaces - one for each Ingress.
+kubectl create secret tls cloud-services-tls -n cloud --cert=tls.crt --key=tls.key
+kubectl create secret tls edge-services-tls  -n edge  --cert=tls.crt --key=tls.key
 ```
 
 Then remove the private key from the device, keeping only `tls.crt` to hand out
@@ -991,7 +1011,8 @@ kubectl run -n cloud probe --rm -it --restart=Never --image=curlimages/curl -- \
 
 ```bash
 kubectl delete secret cloud-services-tls -n cloud
-# ...re-create as above. Traefik picks the new certificate up automatically,
+kubectl delete secret edge-services-tls -n edge
+# ...re-create both as above. Traefik picks the new certificate up automatically,
 # because it reads the Secret rather than mounting it into each pod.
 ```
 
@@ -1001,9 +1022,11 @@ kubectl delete secret cloud-services-tls -n cloud
 > present their own certificate, because nothing independently vouches for this
 > one. Issue certificates from your own CA for anything beyond a demonstration.
 
-> ℹ️ **Not everything is covered.** Grafana, InfluxDB, MQTT Explorer and the
-> Portainer HTTP ports still serve plain HTTP, and each is configured
-> differently. Mosquitto already uses TLS on `8883`. See the
+> ℹ️ **Not everything is covered.** InfluxDB, Grafana, MQTT Explorer and the
+> Portainer HTTP port still serve plain HTTP on the node IP, and each is
+> configured differently. Mosquitto already uses TLS on `8883`. The Edge
+> Translator's OPC UA, LoRaWAN and OCPP ports are not HTTP and so cannot go
+> through this ingress at all. See the
 > [STRIDE analysis](#security-analysis-stride) for what that leaves exposed.
 
 ## Accessing the Web UIs
@@ -1017,6 +1040,8 @@ certificate is self-signed, so your browser will warn on first visit.
 
 | Service | URL | Notes |
 |---------|-----|-------|
+| **UA Edge Translator** | `https://translator.plant.local` | Configure southbound asset connections and the OPC UA information model. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `OPCUA_USERNAME` / `OPCUA_PASSWORD` env vars). |
+| **UA Cloud Publisher** | `https://publisher.plant.local` | Configure which OPC UA nodes to publish and the MQTT broker target (`mosquitto.cloud.svc.cluster.local:8883`, TLS). Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `PUBLISHER_USERNAME` / `PUBLISHER_PASSWORD` env vars). |
 | **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
 | **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
@@ -1024,27 +1049,29 @@ certificate is self-signed, so your browser will warn on first visit.
 
 **Reached directly on the node IP.** Replace `<device-ip>` with the CM5's
 address (from `ip addr` or `kubectl get svc`). These are still `LoadBalancer`
-services, and apart from Portainer they are **not** encrypted — see
+services, and apart from Portainer they are **not** encrypted — they are
+third-party components that each configure TLS differently, so they are left as
+an exercise; see
 [Production Hardening Recommendations](#production-hardening-recommendations).
 
 | Service | URL | Notes |
 |---------|-----|-------|
-| **UA Edge Translator** | `http://<device-ip>:8080` | Configure southbound asset connections and the OPC UA information model. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `OPCUA_USERNAME` / `OPCUA_PASSWORD` env vars). |
-| **UA Cloud Publisher** | `http://<device-ip>:8081` | Configure which OPC UA nodes to publish and the MQTT broker target (`mosquitto.cloud.svc.cluster.local:8883`, TLS). Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `PUBLISHER_USERNAME` / `PUBLISHER_PASSWORD` env vars). |
 | **InfluxDB** | `http://<device-ip>:8086` | Time-series UI, Data Explorer, and dashboards. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (org `iot`, bucket `mqtt`). |
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
 | **Portainer** | `https://<device-ip>:9443` | Kubernetes management UI for the K3s cluster. On first access you set the admin password (see *Managing the Cluster with Portainer*). |
 
-> 🔒 **Why the first group has no port number.** Those four are `ClusterIP`
+> 🔒 **Why the first group has no port number.** Those six are `ClusterIP`
 > services behind a TLS-terminating ingress, so their plain-HTTP ports are not
 > bound on the node IP at all — your `IOT_USERNAME` / `IOT_PASSWORD` cannot be
 > sent in cleartext by accident. See [Enabling TLS](#enabling-tls).
 
-To keep both configuration UIs reachable on the single node, UA Cloud Publisher
-is published on **8081** (mapped to the container's 8080) while the Edge
-Translator stays on **8080**. No extra steps are needed — just browse to `:8080`
-and `:8081` respectively.
+> ℹ️ **The Edge Translator's protocol ports are unchanged.** Only its web UI
+> moved behind the ingress. OPC UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP
+> (`19520`/`19521`) are raw TCP, not HTTP, so an HTTP ingress cannot carry them —
+> they stay on the node IP. OPC UA has its own transport security (see
+> [Automatic Certificate Provisioning](#automatic-certificate-provisioning-gds-server-push)),
+> and LoRaWAN and OCPP have secure variants on `5001` and `19521`.
 
 ## Managing the Cluster with Portainer
 
@@ -1727,12 +1754,12 @@ configuration. The residual risk is the part to act on: see
 **Mitigations already in place**
 
 - MQTT broker requires username/password (`allow_anonymous false`)
-- Most web UIs (`:8080/:8081/:8082/:3000/:9443`) require login
+- Most web UIs require login (the .NET ones over HTTPS through the ingress; InfluxDB, Grafana and Portainer on the node IP)
 - The **UA Cloud Action web UI and OPC UA Web API mandate HTTP Basic authentication on every request (no anonymous access)**
 - OPC UA supports certificate exchange between Publisher/Commander and server
 - The Cloud Library requires an account to upload, and its API is authenticated with `ServiceUsername`/`ServicePassword`
 - The **i3X API fails closed**: with no Basic or OAuth2 credentials configured it returns `503` to every request rather than serving data anonymously
-- **UA Cloud Action, the Cloud Library, i3X and UA Cloud AI are not exposed on the node at all** — they are `ClusterIP` services reachable only through a TLS-terminating ingress, so their Basic credentials cannot cross the LAN in cleartext even by misconfiguration
+- **No .NET web UI or API is exposed on the node at all** — the Edge Translator UI, Cloud Publisher, UA Cloud Action, the Cloud Library, i3X and UA Cloud AI are all `ClusterIP` services reachable only through a TLS-terminating ingress, so their Basic credentials cannot cross the LAN in cleartext even by misconfiguration
 - **UA Cloud AI compares its inbound credentials in fixed time** (`CryptographicOperations.FixedTimeEquals`), so they cannot be recovered by timing its responses
 - **UA Cloud AI warns at startup** when Basic auth is enabled without TLS, or when it is left unauthenticated entirely
 
@@ -1842,7 +1869,9 @@ configuration. The residual risk is the part to act on: see
 - **The PostgreSQL data directory is an unencrypted `hostPath` and the database password is the shared `IOT_PASSWORD`**
 - **Traffic inside the cluster is still plain HTTP** — TLS stops at the ingress, so anything able to observe pod-to-pod traffic (or a compromised pod) still sees credentials and data in the clear; mTLS or a service mesh would be needed to close this
 - **The TLS certificate is self-signed**, so it provides encryption but no identity assurance, and users are trained to click through the browser warning
-- Grafana, InfluxDB, MQTT Explorer and Portainer's HTTP port are still exposed directly on the node IP without TLS
+- InfluxDB, Grafana, MQTT Explorer and Portainer's HTTP port are still exposed directly on the node IP without TLS
+- **The Edge Translator's non-HTTP listeners stay on the node**: OPC UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP (`19520`/`19521`) cannot be carried by an HTTP ingress, so they depend on their own protocol-level security rather than this TLS layer
+- **The Edge Translator's non-HTTP listeners stay on the node**: OPC UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP (`19520`/`19521`) cannot be carried by an HTTP ingress, so they rely on their own protocol-level security rather than this TLS layer
 - **The i3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach the ingress can enumerate the full API surface and read the server's capabilities before authenticating
 - **UA Cloud AI's `/health` endpoint is likewise unauthenticated**, confirming the service exists to an unauthenticated scanner (it returns no plant data)
 - **Tool results leave the cluster entirely** when the MCP client is a hosted AI service, which is a disclosure path no amount of in-cluster hardening addresses
