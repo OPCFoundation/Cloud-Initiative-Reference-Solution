@@ -1138,17 +1138,25 @@ That is the same argument as OPC UA at the edge, applied to the query layer.
 ### Calling the API
 
 The API is at `http://<device-ip>:8084`. It is **machine-facing** — there is no
-web UI — and every endpoint is a `POST` that takes a JSON body:
+web UI — and apart from `/v1/info` every endpoint is a `POST` that takes a JSON
+body:
 
 | Endpoint | What it does |
 |---|---|
-| `/objects/list` | Browse the ISA-95 hierarchy (children of a given node) |
-| `/objects/related` | Follow typed relationships from one object to others |
-| `/objects/value` | Read the current value of an object |
-| `/objects/history` | Read historical values over a time range |
-| `/objecttypes/query` | Discover the available object types |
-| `/relationshiptypes/query` | Discover the available relationship types |
-| `/subscriptions/*` | Register, list and `stream` live updates via server-sent events |
+| `/v1/info` | Server information. A `GET`, and the **only endpoint exempt from authentication** — useful for checking the service is up |
+| `/v1/objects/list` | Browse the ISA-95 hierarchy (children of a given node) |
+| `/v1/objects/related` | Follow typed relationships from one object to others |
+| `/v1/objects/value` | Read the current value of an object |
+| `/v1/objects/history` | Read historical values over a time range |
+| `/v1/objecttypes/query` | Discover the available object types |
+| `/v1/relationshiptypes/query` | Discover the available relationship types |
+| `/v1/subscriptions/*` | Register, list and `stream` live updates via server-sent events |
+
+> ℹ️ **Every route is under `/v1`.** Calling `/objects/list` without the version
+> prefix returns `404`, which is easy to mistake for the service being down.
+> `curl` reporting `000` means something different again — no HTTP response at
+> all, so the pod is not Ready or the Service has no endpoints; check
+> `kubectl get pods -n cloud -l app=i3x4influx` first.
 
 Authentication is **HTTP Basic** with the `IOT_USERNAME` / `IOT_PASSWORD` you
 deployed with, so a browse looks like:
@@ -1157,7 +1165,7 @@ deployed with, so a browse looks like:
 curl -s -u "$IOT_USERNAME:$IOT_PASSWORD" \
   -X POST -H 'Content-Type: application/json' \
   -d '{}' \
-  "http://localhost:8084/objects/list"
+  "http://localhost:8084/v1/objects/list"
 ```
 
 > ℹ️ **Two time ranges control what you see.** `INFLUX_BROWSE_RANGE` (default
@@ -1504,7 +1512,7 @@ configuration. The residual risk is the part to act on: see
 - Overloading the simulated stations or the Modbus simulator with connections
 - **Filling the disk by uploading large or numerous passports/nodesets to the Cloud Library**
 - **Exhausting InfluxDB with the Data Processor's repeated multi-day queries.**
-- Exhausting InfluxDB through the I3X API, whose `/objects/history` and `/subscriptions/stream` endpoints can each drive repeated backend queries
+- Exhausting InfluxDB through the I3X API, whose `/v1/objects/history` and `/v1/subscriptions/stream` endpoints can each drive repeated backend queries
 
 **Mitigations already in place**
 
@@ -1607,7 +1615,7 @@ deployment. Prioritize the items marked **(High)**.
    `I3X_OAUTH2_ISSUER`, which gives per-client identities and expiring tokens
    instead of one shared password. Set `I3X_CORS_ORIGINS` to the specific origins
    that need browser access rather than leaving it open, and put a rate limit in
-   front of `/objects/history` and `/subscriptions/stream`, neither of which is
+   front of `/v1/objects/history` and `/v1/subscriptions/stream`, neither of which is
    bounded today.
 8. **Harden the pods.** Add a `securityContext` (`runAsNonRoot: true`,
    `readOnlyRootFilesystem: true`, drop Linux capabilities,
