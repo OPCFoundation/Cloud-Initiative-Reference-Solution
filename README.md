@@ -150,7 +150,7 @@ Open standards are used *throughout* the stack, not just at the edges:
 | **MQTT 5.0** (OASIS) | The messaging transport, with TLS and authentication. MQTT v5 features (Correlation Data, Response Topic, Message Expiry) carry the request/response correlation for OPC UA Actions. |
 | **EN 18222** (CEN/CENELEC) | Digital Product Passport data model and unique identifiers — the structure of the DPPs that UA Data Processor generates and stores in the UA Cloud Library. |
 | **EN 18223** (CEN/CENELEC) | Digital Product Passport system architecture and data exchange — how DPPs are stored and retrieved by downstream consumers (customer, recycler, regulator) over the Cloud Library's REST API. |
-| **i3X** ([i3x.dev](https://i3x.dev)) | The vendor-neutral REST API for browsing industrial data as a connected ISA-95 graph — enterprise, site, area, line, station — instead of as flat time series, with typed relationships and current/historical values behind one interface. |
+| **i3X** | The vendor-neutral REST API for browsing industrial data as a connected ISA-95 graph — enterprise, site, area, line, station — instead of as flat time series, with typed relationships and current/historical values behind one interface. |
 | **Kubernetes** (CNCF) | The deployment and operations model. |
 
 Because these are *published specifications* rather than product features, any
@@ -223,7 +223,7 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | **cloudlib-postgres** | `cloud` | `postgres:17.6-alpine` | 5432 (ClusterIP only) |
 | **ua-dataprocessor** | `cloud` | `ghcr.io/opcfoundation/ua-dataprocessor:main` | — |
 | **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | 8084 (ClusterIP; HTTPS via ingress) |
-| **ua-cloudai** | `cloud` | `ghcr.io/opcfoundation/ua-cloudai:main` | 5050 (ClusterIP; HTTPS via ingress) |
+| **ua-cloudai** | `cloud` | `ghcr.io/barnstee/ua-cloudai:main` | 5050 (ClusterIP; HTTPS via ingress) |
 | **portainer** | `cloud` | `portainer/portainer-ce:2.44.0` | **9443 (HTTPS UI)**, 9000, 8000 |
 
 **What each component does**
@@ -890,7 +890,7 @@ the single way in from outside is a **TLS-terminating Traefik ingress**:
 | UA Cloud Action | `cloud` | `ua-cloudaction:8082` | `https://cloudaction.plant.local` |
 | UA Cloud Library | `cloud` | `ua-cloudlibrary:8083` | `https://cloudlibrary.plant.local` |
 | i3X for InfluxDB | `cloud` | `i3x4influx:8084` | `https://i3x.plant.local` |
-| UA Cloud AI (MCP) | `cloud` | `ua-cloudai:5050` | `https://cloudai.plant.local` |
+| UA Cloud AI | `cloud` | `ua-cloudai:5050` | `https://cloudai.plant.local` |
 
 Because the HTTP ports are `ClusterIP`, k3s never binds them on the node IP — so
 there is no plain-HTTP port to reach from the LAN, and no way to send credentials
@@ -1044,7 +1044,7 @@ certificate is self-signed, so your browser will warn on first visit.
 | **UA Cloud Publisher** | `https://publisher.plant.local` | Configure which OPC UA nodes to publish and the MQTT broker target (`mosquitto.cloud.svc.cluster.local:8883`, TLS). Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `PUBLISHER_USERNAME` / `PUBLISHER_PASSWORD` env vars). |
 | **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
+| **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the i3X REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
 | **UA Cloud AI** | `https://cloudai.plant.local/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
 
 **Reached directly on the node IP.** Replace `<device-ip>` with the CM5's
@@ -1356,7 +1356,7 @@ station's status lives in the field `Payload_Status_Value` of measurement
 `opcua_metadata`. That is precise, but it is storage-specific — the queries only
 make sense against *this* InfluxDB schema.
 
-**[i3X](https://i3x.dev)** (Industrial Information Interoperability eXchange) is
+**i3X** (Industrial Information Interoperability eXchange) is
 the specification for the other view: the same data as a **connected graph**.
 Clients browse an **ISA-95 hierarchy** — enterprise → site → area → production
 line → station — follow *typed relationships* between objects, and read current
