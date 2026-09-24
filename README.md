@@ -926,6 +926,30 @@ in the clear even by mistake.
 > every stylesheet and script `404`s, leaving the UIs unstyled. Giving each app
 > its own hostname keeps its root path intact.
 
+> ⚠️ **Applications behind the ingress must honour `X-Forwarded-Proto`.** Traefik
+> terminates TLS and forwards to the pod over plain HTTP. An app that does not
+> read that header believes the request arrived over HTTP, and anything it
+> derives from the scheme is then wrong:
+>
+> - **Absolute redirects downgrade the connection.** ASP.NET Identity builds its
+>   login redirect from the observed scheme, so it would send the browser to
+>   `http://…/Identity/Account/Login` — and the credentials typed there cross the
+>   network in the clear.
+> - **Per-client rate limits collapse.** A limiter partitioned on the connection's
+>   remote address sees the ingress pod's IP for *every* caller, turning a
+>   per-client budget into one shared bucket.
+> - **Blazor Server circuits fail.** The websocket URI is derived from the request
+>   scheme, so the client is told to open `ws://` from an `https://` page and the
+>   browser blocks it as mixed content.
+>
+> Each .NET app in this solution therefore calls `UseForwardedHeaders()` as its
+> **first** middleware, with `KnownIPNetworks`/`KnownProxies` cleared because the
+> ingress pod's address is not known in advance. Clearing that allow-list means
+> the app trusts these headers from any caller, which is only safe because these
+> services are `ClusterIP`-only and unreachable except through the ingress. If
+> you ever expose one directly, restore the allow-list — otherwise a client can
+> spoof its own source IP and apparent scheme.
+
 ### Making the hostnames resolve
 
 These names must point at the device. The simplest option is a hosts file entry
@@ -988,6 +1012,17 @@ To verify properly instead of skipping the check, use the certificate you kept:
 
 ```bash
 curl --cacert tls.crt https://i3x.plant.local/v1/info
+```
+
+Typing a bare hostname is fine: browsers try `http://` first, and the ingress
+answers with a permanent redirect to `https://`. The redirect is issued **before
+the request reaches the application**, so no credentials are ever transmitted
+over the cleartext connection. You can see it with:
+
+```bash
+curl -kIs http://i3x.plant.local/ | head -2
+# HTTP/1.1 301 Moved Permanently
+# Location: https://i3x.plant.local/
 ```
 
 Confirm the plain-HTTP ports really are unreachable from the LAN — each of these

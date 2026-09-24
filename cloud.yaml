@@ -3753,16 +3753,36 @@ spec:
 # Verify the old plain-HTTP ports are no longer reachable from the LAN:
 #   curl -sS --max-time 5 http://<device-ip>:8084/v1/info   # must fail
 # ---------------------------------------------------------------------------
+# Redirects any plain-HTTP request to HTTPS. Without this, Traefik has no router
+# on the "web" (:80) entrypoint for these hostnames and answers 404 - so simply
+# typing "cloudlibrary.plant.local" in a browser (which tries http:// first)
+# appears to be broken.
+#
+# The redirect is issued BEFORE the request reaches the application, so no
+# credentials are ever transmitted over the cleartext connection.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: cloud
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: cloud-services
   namespace: cloud
   annotations:
-    # Serve on the HTTPS entrypoint only. Traefik's "websecure" entrypoint is
-    # published on port 443 by the k3s ServiceLB.
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # Listen on BOTH entrypoints: "websecure" (:443) serves the sites, and
+    # "web" (:80) exists only so the middleware below can redirect to HTTPS.
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    # <namespace>-<name>@kubernetescrd is Traefik's naming convention for a
+    # Middleware defined as a Kubernetes CRD.
+    traefik.ingress.kubernetes.io/router.middlewares: cloud-redirect-https@kubernetescrd
 spec:
   tls:
     - secretName: cloud-services-tls

@@ -1670,14 +1670,34 @@ data:
 #   https://translator.plant.local    UA Edge Translator
 #   https://publisher.plant.local     UA Cloud Publisher
 # ---------------------------------------------------------------------------
+# Redirects any plain-HTTP request to HTTPS, so typing a bare hostname in a
+# browser (which tries http:// first) does not hit a Traefik 404. The redirect
+# is issued before the request reaches the application, so no credentials are
+# ever transmitted over the cleartext connection.
+#
+# Secrets and Middlewares are namespace-scoped, which is why this is a separate
+# object from the identical one in cloud.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: edge
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: edge-services
   namespace: edge
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # Listen on BOTH entrypoints: "websecure" (:443) serves the sites, and
+    # "web" (:80) exists only so the middleware above can redirect to HTTPS.
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: edge-redirect-https@kubernetescrd
 spec:
   tls:
     - secretName: edge-services-tls
