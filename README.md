@@ -152,6 +152,7 @@ Open standards are used *throughout* the stack, not just at the edges:
 | **EN 18223** (CEN/CENELEC) | Digital Product Passport system architecture and data exchange — how DPPs are stored and retrieved by downstream consumers (customer, recycler, regulator) over the Cloud Library's REST API. |
 | **i3X** | The vendor-neutral REST API for browsing industrial data as a connected ISA-95 graph — enterprise, site, area, line, station — instead of as flat time series, with typed relationships and current/historical values behind one interface. |
 | **Kubernetes** (CNCF) | The deployment and operations model. |
+| **MCP** (Model Context Protocol) | The agentic AI interface, exposing the plant as a set of tools to AI agents. |
 
 Because these are *published specifications* rather than product features, any
 conforming tool — from any vendor — can participate in this architecture. That is
@@ -289,7 +290,7 @@ end-to-end pipeline from industrial protocols to a time-series database.
   API, so clients can browse the data as an **ISA-95 hierarchy** and follow typed
   relationships instead of writing Flux. See
   [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x).
-- **ua-cloudai** — *UA Cloud AI*, an **[MCP](https://modelcontextprotocol.io)
+- **ua-cloudai** — an **[MCP](https://modelcontextprotocol.io)
   server** that makes the plant available to agentic AI applications such as
   Claude Desktop or VS Code. It does not read the historian itself; it fronts the
   **i3X API** and **UA Cloud Action's OPC UA Web API** and presents them as 14
