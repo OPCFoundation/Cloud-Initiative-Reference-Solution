@@ -830,7 +830,7 @@ Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
 | **UA Cloud Action** | `http://<device-ip>:8082` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
 | **UA Cloud Library** | `http://<device-ip>:8083` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **I3X for InfluxDB** | `http://<device-ip>:8084` | [I3X](https://i3x.dev) REST API over the telemetry in InfluxDB — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. Not a web UI: it is a machine-facing API (see [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x)). Requires HTTP Basic auth with your `IOT_USERNAME` / `IOT_PASSWORD`. |
+| **I3X for InfluxDB** | `http://<device-ip>:8084/swagger` | **Swagger UI for the [I3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (I3X)](#browsing-the-data-as-a-graph-i3x). |
 
 To keep both UIs reachable on the single node,
  **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
@@ -1137,13 +1137,19 @@ That is the same argument as OPC UA at the edge, applied to the query layer.
 
 ### Calling the API
 
-The API is at `http://<device-ip>:8084`. It is **machine-facing** — there is no
-web UI. Browsing and discovery are `GET`s; the `POST` endpoints are bulk
-operations that take a JSON body naming the elements to act on:
+The API is at `http://<device-ip>:8084`, and it ships a **built-in Swagger UI at
+`http://<device-ip>:8084/swagger`** — the easiest way to explore it. The Swagger
+page loads without credentials, but press **Authorize** and enter your
+`IOT_USERNAME` / `IOT_PASSWORD` before invoking anything, or every call returns
+`401`.
+
+Browsing and discovery are `GET`s; the `POST` endpoints are bulk operations that
+take a JSON body naming the elements to act on:
 
 | Endpoint | Verb | What it does |
 |---|---|---|
-| `/v1/info` | `GET` | Server information. The **only endpoint exempt from authentication** — useful for checking the service is up |
+| `/swagger` | `GET` | **Built-in Swagger UI.** Exempt from authentication, so the page loads without credentials — use its **Authorize** button before calling anything |
+| `/v1/info` | `GET` | Server information. Also **exempt from authentication** — useful for checking the service is up |
 | `/v1/objects` | `GET` | **Browse the ISA-95 hierarchy.** Add `?root=true` for the top level, or `?typeElementId=…` to filter by type |
 | `/v1/namespaces` | `GET` | List the OPC UA namespaces present in the data |
 | `/v1/objecttypes` | `GET` | List the available object types |
@@ -1520,6 +1526,7 @@ configuration. The residual risk is the part to act on: see
 - **The Cloud Library is served over plain HTTP, so registration and login credentials cross the network in the clear**
 - All UIs are exposed on the node IP with no network policy
 - **The I3X API is served over plain HTTP with Basic auth**, so both the credentials and every value returned cross the network in the clear
+- **The I3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach `:8084` can enumerate the full API surface and read the server's capabilities before authenticating
 
 #### Denial of service (availability)
 
