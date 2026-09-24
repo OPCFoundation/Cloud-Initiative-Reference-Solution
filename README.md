@@ -33,6 +33,8 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [Making the hostnames resolve](#making-the-hostnames-resolve)
   - [Creating the certificate](#creating-the-certificate)
   - [Using it](#using-it)
+  - [Trusting the certificate on client machines](#trusting-the-certificate-on-client-machines)
+    - [Node.js clients (MCP Inspector, mcp-remote)](#nodejs-clients-mcp-inspector-mcp-remote)
   - [Rotating or replacing it](#rotating-or-replacing-it)
 - [Accessing the Web UIs](#accessing-the-web-uis)
 - [Managing the Cluster with Portainer](#managing-the-cluster-with-portainer)
@@ -1001,10 +1003,12 @@ shred -u tls.key
 
 ### Using it
 
-Browsers will warn on first visit because the certificate is self-signed — that
-warning is expected here, but it is also exactly what a real
-man-in-the-middle looks like, so do not train yourself to click through it on
-anything that matters. For command-line clients pass `-k`:
+Browsers will warn on first visit because the certificate is self-signed. You can
+click through it, but the better fix is to
+[trust the certificate on your client machines](#trusting-the-certificate-on-client-machines)
+— dismissing that warning repeatedly trains you to ignore exactly the message
+that would appear during a real man-in-the-middle attack. Until you do, pass `-k`
+to command-line clients:
 
 ```bash
 curl -k https://i3x.plant.local/v1/info
@@ -1044,6 +1048,98 @@ keeps the internal call paths working:
 kubectl run -n cloud probe --rm -it --restart=Never --image=curlimages/curl -- \
   curl -sS http://i3x4influx:8084/v1/info -u "$IOT_USERNAME:$IOT_PASSWORD"
 ```
+
+### Trusting the certificate on client machines
+
+Until a client trusts the certificate, every browser shows a full-page
+**"Your connection is not private"** warning, and command-line and programmatic
+clients fail outright. Clicking through the browser warning each time is not just
+irritating — it teaches you to dismiss exactly the warning that would appear
+during a real attack. Install the certificate once instead.
+
+First copy `tls.crt` off the device (this is the public certificate, safe to
+distribute — the private key never leaves the Pi):
+
+```bash
+scp pi@<device-ip>:~/tls.crt .
+```
+
+> ℹ️ If you already ran `shred -u tls.key` and no longer have `tls.crt` either,
+> fetch it back from the cluster:
+>
+> ```bash
+> kubectl get secret cloud-services-tls -n cloud \
+>   -o jsonpath='{.data.tls\.crt}' | base64 -d > tls.crt
+> ```
+
+**Windows** — installs for every user and every browser except Firefox. Run in an
+**elevated** PowerShell:
+
+```powershell
+Import-Certificate -FilePath .\tls.crt -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+**macOS**:
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain tls.crt
+```
+
+**Linux** (Debian/Ubuntu):
+
+```bash
+sudo cp tls.crt /usr/local/share/ca-certificates/plant-local.crt
+sudo update-ca-certificates
+```
+
+**Firefox** keeps its own trust store and ignores the operating system's. Go to
+*Settings → Privacy & Security → Certificates → View Certificates → Authorities →
+Import*, select `tls.crt`, and tick **"Trust this CA to identify websites"**.
+
+Verify it worked — this should now succeed **without** `-k`:
+
+```bash
+curl https://i3x.plant.local/v1/info -u "$IOT_USERNAME:$IOT_PASSWORD"
+```
+
+#### Node.js clients (MCP Inspector, mcp-remote)
+
+Node does **not** use the operating system's certificate store by default — it
+ships its own bundled list of certificate authorities. Installing the certificate
+as above therefore fixes browsers and `curl` but **not** MCP Inspector, which
+fails with `fetch failed` and `DEPTH_ZERO_SELF_SIGNED_CERT`.
+
+Point Node at the certificate explicitly:
+
+```powershell
+$env:NODE_EXTRA_CA_CERTS = "C:\path\to\tls.crt"
+npx @modelcontextprotocol/inspector
+```
+
+```bash
+export NODE_EXTRA_CA_CERTS=/path/to/tls.crt
+npx @modelcontextprotocol/inspector
+```
+
+The file must be **PEM** (it begins `-----BEGIN CERTIFICATE-----`), which is what
+`kubectl` and `openssl` produce. A DER-encoded `.crt` is silently ignored.
+
+For Claude Desktop, set the same variable in the server's `env` block so the
+bridged process inherits it:
+
+```json
+"ua-cloudai": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://cloudai.plant.local/mcp", "--header", "..."],
+  "env": { "NODE_EXTRA_CA_CERTS": "C:\\path\\to\\tls.crt" }
+}
+```
+
+> ⚠️ You will find `NODE_TLS_REJECT_UNAUTHORIZED=0` suggested for this. It works,
+> but it disables certificate verification for **every** connection that Node
+> process makes — not just yours. Use it only in a throwaway shell for a one-off
+> test, and never set it permanently or in a service definition.
 
 ### Rotating or replacing it
 
@@ -1607,9 +1703,11 @@ see all 14 tools.
 > self-signed certificate. If it cannot connect, use the `curl` handshake above
 > to confirm the server itself is healthy before debugging the client.
 
-> ⚠️ The certificate is self-signed, hence `-k` above. Clients that cannot be
-> told to trust it will refuse to connect; distribute `tls.crt` as the trust
-> anchor, or use a certificate from your own CA. See [Enabling TLS](#enabling-tls).
+> ⚠️ The certificate is self-signed, hence `-k` above. **MCP Inspector and
+> `mcp-remote` will fail with `fetch failed` / `DEPTH_ZERO_SELF_SIGNED_CERT`**
+> until Node is told to trust it — Node ignores the operating system's
+> certificate store, so installing the certificate system-wide is not enough. See
+> [Node.js clients](#nodejs-clients-mcp-inspector-mcp-remote).
 
 > 🔒 **UA Cloud AI is read-only by design.** It browses and reads; there is no
 > write, method-call or actuation path. An agent can analyse the plant but cannot
