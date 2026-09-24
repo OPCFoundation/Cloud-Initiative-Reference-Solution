@@ -3407,3 +3407,127 @@ spec:
             #   value: "<your WattTime user>"
             # - name: WATTTIME_PASSWORD
             #   value: "<your WattTime password>"
+---
+# ---------------------------------------------------------------------------
+# I3X for InfluxDB - an I3X (Industrial Information Interoperability eXchange,
+# https://i3x.dev) server that exposes the OPC UA telemetry already in InfluxDB
+# through the vendor-neutral I3X REST API.
+#
+# I3X is the CESMII/OPC Foundation specification for querying industrial data as
+# a CONNECTED GRAPH rather than as flat time series: clients browse an ISA-95
+# hierarchy (enterprise -> site -> area -> line -> station), follow typed
+# relationships between objects, and read current or historical values through
+# one API, regardless of which historian is underneath. This container maps that
+# API onto the same opcua_pubsub / opcua_metadata measurements that Telegraf
+# writes and the Grafana dashboards read, so no additional ingestion is needed.
+#
+# AUTHENTICATION IS MANDATORY. The middleware FAILS CLOSED: if neither Basic nor
+# OAuth2 is configured every request returns 503 rather than serving data
+# anonymously, so I3X_BASIC_AUTH_USERNAME/PASSWORD must be set below. OAuth2 is
+# also supported (I3X_OAUTH2_AUTHORITY/AUDIENCE/ISSUER) and is the better choice
+# in production; see the README security section.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i3x4influx
+  namespace: cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: i3x4influx
+  template:
+    metadata:
+      labels:
+        app: i3x4influx
+    spec:
+      initContainers:
+        - name: wait-for-influxdb
+          image: busybox:1.38
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - "until nc -z influxdb 8086; do echo waiting for influxdb; sleep 5; done"
+      containers:
+        - name: i3x4influx
+          image: ghcr.io/barnstee/i3x4influx:main
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ASPNETCORE_HTTP_PORTS
+              value: "8080"
+            # --- InfluxDB (the same measurements Telegraf writes) ---
+            - name: INFLUX_URL
+              value: "http://influxdb.cloud.svc.cluster.local:8086"
+            - name: INFLUX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUX_TOKEN
+            - name: INFLUX_ORG
+              value: "iot"
+            - name: INFLUX_BUCKET
+              value: "mqtt"
+            - name: INFLUX_MEASUREMENT
+              value: "opcua_pubsub"
+            - name: INFLUX_METADATA_MEASUREMENT
+              value: "opcua_metadata"
+            # How far back to look when building the ISA-95 browse tree and when
+            # resolving a current value. The simulated line publishes every
+            # second, so an hour is ample for "latest"; the browse range must be
+            # long enough to survive the idle gaps between production shifts.
+            - name: INFLUX_BROWSE_RANGE
+              value: "-24h"
+            - name: INFLUX_LATEST_RANGE
+              value: "-1h"
+            - name: INFLUX_TIMEOUT_SECONDS
+              value: "120"
+            # --- Authentication (mandatory - see the note above) ---
+            - name: I3X_BASIC_AUTH_USERNAME
+              value: "${IOT_USERNAME}"
+            - name: I3X_BASIC_AUTH_PASSWORD
+              value: "${IOT_PASSWORD}"
+            # --- Optional tuning ---
+            # Metadata changes only when the published node set changes, so it is
+            # cached rather than re-queried on every browse.
+            - name: I3X_METADATA_CACHE_SECONDS
+              value: "60"
+            # Poll interval backing the /subscriptions/stream server-sent events.
+            - name: I3X_STREAM_POLL_MS
+              value: "1000"
+            # CORS: set to the origin of a browser app calling this API directly,
+            # e.g. "http://<device-ip>:3000". Left unset, no cross-origin browser
+            # client can reach it.
+            # - name: I3X_CORS_ORIGINS
+            #   value: "http://<device-ip>:3000"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i3x4influx
+  namespace: cloud
+spec:
+  type: LoadBalancer
+  selector:
+    app: i3x4influx
+  ports:
+    - name: http
+      port: 8084
+      targetPort: 8080
