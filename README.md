@@ -30,6 +30,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [What Happens](#what-happens)
   - [Using It Manually](#using-it-manually)
 - [Enabling TLS](#enabling-tls)
+  - [Making the hostnames resolve](#making-the-hostnames-resolve)
   - [Creating the certificate](#creating-the-certificate)
   - [Using it](#using-it)
   - [Rotating or replacing it](#rotating-or-replacing-it)
@@ -375,7 +376,38 @@ kubectl get nodes -A
    curl -fsSLO https://raw.githubusercontent.com/OPCF-Members/Cloud-Initiative-Reference-Solution/main/cloud.yaml
    ```
 
-2. Provide the deployment credentials and InfluxDB token. The manifests
+2. **Create the TLS certificate.** The four .NET services are reachable from
+   outside the cluster only over HTTPS, through an ingress that reads a
+   `cloud-services-tls` Secret. That Secret is **not** created by `cloud.yaml`,
+   and the ingress will not serve tls until it exists — so do this *before*
+   applying:
+
+   ```bash
+   cd ~
+
+   # The subjectAltName must list every name you will browse to, or modern
+   # clients reject the certificate even when the CN matches.
+   IP=$(hostname -I | awk '{print $1}')
+   openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
+     -keyout tls.key -out tls.crt \
+     -subj "/CN=$IP" \
+     -addext "subjectAltName=IP:$IP,DNS:localhost,DNS:cloudaction.plant.local,DNS:cloudlibrary.plant.local,DNS:i3x.plant.local,DNS:cloudai.plant.local"
+
+   # The namespace must exist before the Secret can be created in it.
+   kubectl create namespace cloud --dry-run=client -o yaml | kubectl apply -f -
+
+   kubectl create secret tls cloud-services-tls -n cloud \
+     --cert=tls.crt --key=tls.key
+
+   # Keep tls.crt to hand out as the trust anchor; the key is now in the cluster.
+   shred -u tls.key
+   ```
+
+   > ℹ️ For the full explanation — why TLS is terminated at the ingress, why the
+   > hostnames are needed, and how to rotate the certificate — see
+   > [Enabling TLS](#enabling-tls).
+
+3. Provide the deployment credentials and InfluxDB token. The manifests
    reference `${IOT_USERNAME}`, `${IOT_PASSWORD}`, and `${INFLUX_TOKEN}`, so set
    them and substitute them at apply time:
 
@@ -397,10 +429,16 @@ kubectl get nodes -A
    envsubst '${IOT_USERNAME} ${IOT_PASSWORD} ${INFLUX_TOKEN}' < edge.yaml  | kubectl apply -f -
    ```
 
-   > ⚠️ **Create the TLS certificate first.** Several services mount a
-   > `cloud-services-tls` Secret to serve HTTPS. It is **not** created by
-   > `cloud.yaml`, so if you skip this those pods stay in `ContainerCreating`
-   > waiting for it. See [Enabling TLS](#enabling-tls) — it is three commands.
+   > ⚠️ **Add the hostnames to your hosts file** on whichever machine you browse
+   > from, or the `*.plant.local` URLs below will not resolve (replace the IP
+   > with your device's):
+   >
+   > ```
+   > 192.168.1.50  cloudaction.plant.local cloudlibrary.plant.local i3x.plant.local cloudai.plant.local
+   > ```
+   >
+   > That file is `/etc/hosts` on Linux and macOS, and
+   > `C:\Windows\System32\drivers\etc\hosts` on Windows (edit as Administrator).
 
    > `envsubst` is part of the `gettext` package (`sudo apt install -y gettext-base`).
    > Keep the values you chose — you'll reuse `IOT_USERNAME` / `IOT_PASSWORD` to
@@ -431,7 +469,7 @@ kubectl get nodes -A
    > clusters, replace those names with the externally reachable addresses of the
    > remote services before applying.
 
-3. Watch the workloads come up (each part lives in its own namespace):
+4. Watch the workloads come up (each part lives in its own namespace):
 
    ```bash
    kubectl get pods,svc -n cloud
@@ -887,9 +925,10 @@ install.
 
 ### Creating the certificate
 
-The `cloud-services-tls` Secret is **not** created by `cloud.yaml`; generate it
-before applying the manifests. For a reference deployment a self-signed
-certificate is fine:
+The `cloud-services-tls` Secret is **not** created by `cloud.yaml`. It is
+generated as [step 2 of Apply the Stack Manifests](#apply-the-stack-manifests),
+before the manifests are applied — so if you followed the deployment steps you
+already have it. For reference, those commands are:
 
 ```bash
 cd ~
@@ -969,30 +1008,43 @@ kubectl delete secret cloud-services-tls -n cloud
 
 ## Accessing the Web UIs
 
-Replace `<device-ip>` with the CM5's IP address (from `ip addr` or
-`kubectl get svc`). All services are exposed as `LoadBalancer` types on the node.
+The services fall into two groups.
+
+**Reached over HTTPS through the ingress.** These are `ClusterIP` services with
+no port on the node at all — the hostnames must resolve to the device, so add
+them to your hosts file first (see [Enabling TLS](#enabling-tls)). The
+certificate is self-signed, so your browser will warn on first visit.
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
+| **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
+| **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
+| **UA Cloud AI** | `https://cloudai.plant.local/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
+
+**Reached directly on the node IP.** Replace `<device-ip>` with the CM5's
+address (from `ip addr` or `kubectl get svc`). These are still `LoadBalancer`
+services, and apart from Portainer they are **not** encrypted — see
+[Production Hardening Recommendations](#production-hardening-recommendations).
 
 | Service | URL | Notes |
 |---------|-----|-------|
 | **UA Edge Translator** | `http://<device-ip>:8080` | Configure southbound asset connections and the OPC UA information model. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `OPCUA_USERNAME` / `OPCUA_PASSWORD` env vars). |
 | **UA Cloud Publisher** | `http://<device-ip>:8081` | Configure which OPC UA nodes to publish and the MQTT broker target (`mosquitto.cloud.svc.cluster.local:8883`, TLS). Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (exposed via the manifest `PUBLISHER_USERNAME` / `PUBLISHER_PASSWORD` env vars). |
 | **InfluxDB** | `http://<device-ip>:8086` | Time-series UI, Data Explorer, and dashboards. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (org `iot`, bucket `mqtt`). |
-| **Portainer** | `https://<device-ip>:9443` | Kubernetes management UI for the K3s cluster. On first access you set the admin password (see *Managing the Cluster with Portainer*). |
 | **Grafana** | `http://<device-ip>:3000` | Dashboards & alerting. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set. The InfluxDB data source and three dashboards (*Production Line OEE*, *Modbus Simulator*, *UA Cloud Publisher Diagnostics*) are pre-provisioned (see *Pre-Provisioned Grafana Dashboards*). |
-| **UA Cloud Action** | `https://cloudaction.plant.local` | Status UI for the automated feedback loop (data-source, broker, and Commander connectivity) and OPC UA Web API. Log in with the `IOT_USERNAME` / `IOT_PASSWORD` you set (see *Automated Feedback Loop with UA Cloud Action*). |
 | **MQTT Explorer** | `http://<device-ip>:4000` | Web UI for the Mosquitto broker — browse the live topic tree, inspect the OPC UA PubSub payloads on `data/#` and `metadata`, and publish messages by hand (handy for driving UA Cloud Commander on `commands`). The broker connection is pre-provisioned — just press **Connect**; see *Inspecting the Broker with MQTT Explorer*. ⚠️ **No built-in authentication.** |
-| **UA Cloud Library** | `https://cloudlibrary.plant.local` | Web UI for the self-hosted store of OPC UA Information Models and Digital Product Passports — browse, search, upload and download nodesets, and explore the REST API. On first use you must **register an account using your `IOT_USERNAME`** and a strong password of your choosing, or the library will appear empty; see [First Login](#first-login-register-with-your-iot_username). ⚠️ **Email verification is disabled, so registration is open to anyone who can reach this page.** |
-| **i3X for InfluxDB** | `https://i3x.plant.local/swagger` | **Swagger UI for the [i3X](https://i3x.dev) REST API over the telemetry in InfluxDB** — browse the data as an ISA-95 hierarchy, follow typed relationships, and read current or historical values without writing Flux. The Swagger page itself needs no login (it is exempt from authentication), but **Authorize** with your `IOT_USERNAME` / `IOT_PASSWORD` before calling any endpoint. See [Browsing the Data as a Graph (i3X)](#browsing-the-data-as-a-graph-i3x). |
-| **UA Cloud AI** | `https://cloudai.plant.local/mcp` | **MCP endpoint** for agentic AI applications — not a web UI, so there is nothing to browse to. Point Claude Desktop, VS Code or an MCP test client at it and authenticate with your `IOT_USERNAME` / `IOT_PASSWORD`. A `/health` endpoint is available unauthenticated for checking it is up. See [Asking Questions with AI (MCP)](#asking-questions-with-ai-mcp). |
+| **Portainer** | `https://<device-ip>:9443` | Kubernetes management UI for the K3s cluster. On first access you set the admin password (see *Managing the Cluster with Portainer*). |
 
-> 🔒 **These four are HTTPS-only from outside the cluster.** UA Cloud Action, UA
-> Cloud Library, i3X and UA Cloud AI are `ClusterIP` services reached through a
-> TLS-terminating ingress, so their plain-HTTP ports are **not** bound on the
-> node IP at all and your `IOT_USERNAME` / `IOT_PASSWORD` cannot be sent in
-> cleartext by accident. See [Enabling TLS](#enabling-tls).
+> 🔒 **Why the first group has no port number.** Those four are `ClusterIP`
+> services behind a TLS-terminating ingress, so their plain-HTTP ports are not
+> bound on the node IP at all — your `IOT_USERNAME` / `IOT_PASSWORD` cannot be
+> sent in cleartext by accident. See [Enabling TLS](#enabling-tls).
 
-To keep both UIs reachable on the single node,
- **8081** (mapped to the container's 8080) while the Edge Translator stays on **8080**. No extra steps are needed — just browse to `:8080` and `:8081` respectively.
+To keep both configuration UIs reachable on the single node, UA Cloud Publisher
+is published on **8081** (mapped to the container's 8080) while the Edge
+Translator stays on **8080**. No extra steps are needed — just browse to `:8080`
+and `:8081` respectively.
 
 ## Managing the Cluster with Portainer
 
