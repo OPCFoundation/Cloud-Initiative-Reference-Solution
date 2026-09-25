@@ -1864,9 +1864,10 @@ and what to change before an internet-exposed or production deployment.
 > **Important:** the reference manifest is optimized for a self-contained,
 > single-node demo. It ships with convenience defaults (shared credentials, a
 > self-signed broker certificate generated at pod start, `LoadBalancer` services
-> bound to the node IP, and permissive TLS verification in Telegraf). HTTPS is
-> available on the .NET services but uses a **self-signed** certificate and runs
-> **alongside** the still-open plain-HTTP ports. These are
+> bound to the node IP for the third-party components, and permissive TLS
+> verification in Telegraf). The .NET services are reachable only over HTTPS
+> through the ingress, but with a **self-signed** certificate, and TLS terminates
+> at the ingress so pod-to-pod traffic remains plain HTTP. These are
 > **not** appropriate for production as-is — see
 > [Production Hardening Recommendations](#production-hardening-recommendations).
 
@@ -1908,7 +1909,7 @@ Product Passport** — a regulatory record whose integrity is the point of keepi
 it), the broker's private key, the
 Portainer `cluster-admin` ServiceAccount token (full control of the cluster), and
 the K3s node itself (root of trust for all `hostPath` data). The **i3X API**
-(`:8084`) is a further read path to the same telemetry, so it inherits the value
+(`i3x.plant.local`) is a further read path to the same telemetry, so it inherits the value
 of the data it exposes. **UA Cloud AI** is a read path on top of
 *both* APIs, so it inherits the union of what they expose — and because it is
 driven in natural language, it lowers the expertise needed to exploit that access.
@@ -1934,10 +1935,11 @@ configuration. The residual risk is the part to act on: see
 - An unauthenticated caller hits the **OPC UA Web API**
 - Anything on the pod network impersonates a Modbus master
 - **Theft of the Publisher's CA key (`/publisher/pki/issuer/private`) lets an attacker mint a trusted certificate for any component**
-- **Anyone who can reach the UA Cloud Library UI (`:8083`) can self-register a working account and act as a legitimate user.**
-- An unauthenticated caller queries the **i3X API** (`:8084`) and reads the entire ISA-95 hierarchy and its values
+- **Anyone who can reach the UA Cloud Library UI can self-register a working account and act as a legitimate user.**
+- An unauthenticated caller queries the **i3X API** and reads the entire ISA-95 hierarchy and its values
 - **An unauthenticated caller reaches the MCP endpoint and uses UA Cloud AI as a ready-made interface to the whole plant**
 - **A malicious or compromised MCP client impersonates a legitimate agent, since the server cannot distinguish one Basic-authenticated caller from another**
+- **A caller reaching a .NET service directly spoofs its own source IP and scheme** by sending forged `X-Forwarded-For` / `X-Forwarded-Proto` headers, because those services trust the headers unconditionally (see the residual risks below)
 
 **Mitigations already in place**
 
@@ -1954,7 +1956,7 @@ configuration. The residual risk is the part to act on: see
 **Residual risk / gaps**
 
 - Single shared credential set across all components (including Grafana/Portainer admin and the Web API)
-- **TLS is available but optional and self-signed**: the plain-HTTP ports remain open, and a self-signed certificate encrypts traffic without proving identity, so an active man-in-the-middle presenting their own certificate is not prevented
+- **TLS terminates at the ingress and the certificate is self-signed**: it encrypts traffic but proves no identity, so an active attacker presenting their own certificate is not prevented, and pod-to-pod traffic behind the ingress is still plain HTTP
 - No per-service identities or mutual TLS (mTLS)
 - Broker does not authenticate clients by certificate
 - Any client that can publish to `commands` can drive Commander
@@ -1965,6 +1967,7 @@ configuration. The residual risk is the part to act on: see
 - **The i3X API shares the same `IOT_USERNAME` / `IOT_PASSWORD` as everything else**, so it grants no separate identity and a single leaked credential opens it too
 - **UA Cloud AI reuses that same credential pair both inbound and outbound**, so one leak exposes the MCP endpoint and, through it, both backends
 - **The MCP endpoint serves anonymously if `MCP_USERNAME`/`MCP_PASSWORD` are left unset** — it warns loudly at startup, but nothing prevents it
+- **The .NET services trust `X-Forwarded-For` / `X-Forwarded-Proto` from any source.** They must, because the ingress pod's address is not known in advance, so `KnownIPNetworks`/`KnownProxies` are cleared. This is safe *only* because those services are `ClusterIP`-only and unreachable except through the ingress — exposing any of them directly would let a caller forge its apparent client IP and scheme, defeating IP-based rate limiting and any scheme-dependent logic
 
 #### Tampering (integrity)
 
@@ -1989,7 +1992,7 @@ configuration. The residual risk is the part to act on: see
 **Residual risk / gaps**
 
 - Telegraf and UA Cloud Action use TLS verification skip (`insecure_skip_verify` / `MQTT_TLS_INSECURE=true`), so a man-in-the-middle with any cert is accepted
-- `hostPath` volumes (`/influxdb2`, `/cloudlib-postgres`, `/cloudlib-dpkeys`, `/translator/*`, `/publisher/*`, `/commander/*`, `/p
+- `hostPath` volumes (`/influxdb2`, `/cloudlib-postgres`, `/cloudlib-dpkeys`, `/translator/*`, `/publisher/*`, `/commander/*`, `/productionline/*`, `/mosquitto`, `/portainer`, `/grafana`) are writable by anyone with node access
 - No message signing on payloads
 - Commander performs Writes/MethodCalls with no per-action authorization
 - **Stored Digital Product Passports are not signed or provenance-checked, and because registration is open any account can upload one, so a passport carries no cryptographic proof of origin**
@@ -1998,6 +2001,7 @@ configuration. The residual risk is the part to act on: see
 - **i3X is a read-only projection, so it cannot alter stored telemetry** — and it is now reachable from outside only over HTTPS through the ingress, so responses can no longer be altered in flight by a passive network attacker
 - **UA Cloud AI cannot tamper with anything by design** — it exposes no write, method-call or actuation tool — but it can be *misled*: it faithfully relays whatever the backends return, so a compromised backend misrepresents the plant to the model
 - **A model acting on UA Cloud AI's output may drive changes through other paths** (an operator acting on its answer, or UA Cloud Action's feedback loop), so its read-only boundary does not by itself make downstream effects safe
+- **Credentials are injected by `envsubst` at apply time with no validation**, so an unset or mistyped variable is silently substituted as an empty string or literal text across every manifest. The cluster then runs with credentials nobody intended, and the failure surfaces later as unrelated-looking authentication errors rather than at deploy time
 
 #### Repudiation (auditability)
 
@@ -2046,7 +2050,8 @@ configuration. The residual risk is the part to act on: see
 - Credentials are supplied at apply time (not committed to git)
 - PostgreSQL is `ClusterIP` only, so it is not reachable from outside the cluster
 - Cloud Library passwords are stored as ASP.NET Identity hashes, not plaintext
-- **UA Cloud Action, the Cloud Library, i3X and UA Cloud AI can all be reached over HTTPS**, so credentials and returned data need not cross the network in cleartext (see [Enabling TLS](#enabling-tls))
+- **Every .NET web UI and API is reachable only over HTTPS**, through the ingress, so credentials and returned data cannot cross the network in cleartext (see [Enabling TLS](#enabling-tls))
+- **Plain-HTTP requests are redirected to HTTPS before reaching the application**, so a mistyped `http://` URL cannot leak credentials — the redirect is issued by the ingress, ahead of any authentication challenge
 - **UA Cloud AI caps how much any one tool call returns** (`MCP_MAX_RESULTS`, default 200), so a single broad request cannot trivially export the whole address space
 
 **Residual risk / gaps**
@@ -2060,7 +2065,6 @@ configuration. The residual risk is the part to act on: see
 - **The TLS certificate is self-signed**, so it provides encryption but no identity assurance, and users are trained to click through the browser warning
 - InfluxDB, Grafana, MQTT Explorer and Portainer's HTTP port are still exposed directly on the node IP without TLS
 - **The Edge Translator's non-HTTP listeners stay on the node**: OPC UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP (`19520`/`19521`) cannot be carried by an HTTP ingress, so they depend on their own protocol-level security rather than this TLS layer
-- **The Edge Translator's non-HTTP listeners stay on the node**: OPC UA (`4840`), LoRaWAN (`5000`/`5001`) and OCPP (`19520`/`19521`) cannot be carried by an HTTP ingress, so they rely on their own protocol-level security rather than this TLS layer
 - **The i3X Swagger UI and `/v1/info` are exempt from authentication**, so anyone who can reach the ingress can enumerate the full API surface and read the server's capabilities before authenticating
 - **UA Cloud AI's `/health` endpoint is likewise unauthenticated**, confirming the service exists to an unauthenticated scanner (it returns no plant data)
 - **Tool results leave the cluster entirely** when the MCP client is a hosted AI service, which is a disclosure path no amount of in-cluster hardening addresses
@@ -2078,6 +2082,7 @@ configuration. The residual risk is the part to act on: see
 - **Exhausting InfluxDB with the Data Processor's repeated multi-day queries.**
 - Exhausting InfluxDB through the i3X API, whose `/v1/objects/history` and `/v1/subscriptions/stream` endpoints can each drive repeated backend queries
 - **Amplifying load through UA Cloud AI**, where a single natural-language question can fan out into many tool calls and therefore many backend queries — an agent retrying or looping does this without any attacker intent
+- **Losing the Cloud Library's Data Protection key ring**, which locks every user out: the authentication cookie and the login form's antiforgery token both become undecryptable, so logins are rejected before the password is even checked
 
 **Mitigations already in place**
 
@@ -2089,6 +2094,7 @@ configuration. The residual risk is the part to act on: see
 - The Data Processor polls on a fixed interval rather than continuously
 - i3X caches metadata (`I3X_METADATA_CACHE_SECONDS`) and bounds its browse and latest-value lookups to fixed time ranges rather than scanning the whole bucket
 - UA Cloud AI caps results per call (`MCP_MAX_RESULTS`) and bounds every backend request with a timeout (`HTTP_TIMEOUT_SECONDS`), so one tool call cannot hang indefinitely
+- The Cloud Library's Data Protection key ring is persisted to a `hostPath` volume (`/cloudlib-dpkeys`), so cookies and antiforgery tokens survive restarts and upgrades
 
 **Residual risk / gaps**
 
