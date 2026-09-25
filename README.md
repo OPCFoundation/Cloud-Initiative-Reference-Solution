@@ -516,6 +516,7 @@ Related OPC UA telemetry persistence paths are also mapped as `hostPath` volumes
 | `/portainer` | Portainer | Portainer database, users, and settings. |
 | `/grafana` | Grafana | Grafana database, users, and user-created dashboards. |
 | `/cloudlib-postgres` | UA Cloud Library (PostgreSQL) | The Cloud Library's entire state: user accounts **and** every uploaded OPC UA nodeset. This directory is the only thing to back up — and deleting it discards every model you uploaded. |
+| `/cloudlib-dpkeys` | UA Cloud Library | ASP.NET Core Data Protection key ring. These keys encrypt the login cookie, the antiforgery token on every form, and password-reset tokens. Without persisting them, **every restart signs all users out and breaks the login form** — the antiforgery token becomes undecryptable and the POST is rejected before the password is checked, which looks exactly like a wrong password. |
 
 > **Note:** Keep the `INFLUX_TOKEN` safe, to read the telemetry stored in InfluxDB in backup scenarios.
 >
@@ -629,7 +630,7 @@ To start genuinely from scratch — new certificates, empty database, fresh admi
 accounts — also delete the host directories:
 
 ```bash
-sudo rm -rf /mosquitto /influxdb2 /portainer /grafana /cloudlib-postgres
+sudo rm -rf /mosquitto /influxdb2 /portainer /grafana /cloudlib-postgres /cloudlib-dpkeys
 sudo rm -rf /translator /publisher /commander /productionline
 ```
 
@@ -1988,7 +1989,7 @@ configuration. The residual risk is the part to act on: see
 **Residual risk / gaps**
 
 - Telegraf and UA Cloud Action use TLS verification skip (`insecure_skip_verify` / `MQTT_TLS_INSECURE=true`), so a man-in-the-middle with any cert is accepted
-- `hostPath` volumes (`/influxdb2`, `/cloudlib-postgres`, `/translator/*`, `/publisher/*`, `/commander/*`, `/productionline/*`, `/mosquitto`, `/portainer`, `/grafana`) are writable by anyone with node access
+- `hostPath` volumes (`/influxdb2`, `/cloudlib-postgres`, `/cloudlib-dpkeys`, `/translator/*`, `/publisher/*`, `/commander/*`, `/p
 - No message signing on payloads
 - Commander performs Writes/MethodCalls with no per-action authorization
 - **Stored Digital Product Passports are not signed or provenance-checked, and because registration is open any account can upload one, so a passport carries no cryptographic proof of origin**
@@ -2032,6 +2033,7 @@ configuration. The residual risk is the part to act on: see
 - Leaking the **UA Cloud Library credentials** used by the import Job
 - **Reading an OPC UA private key — or the Publisher's CA key — off the node (or off the SSD if the device is removed)**
 - **Reading the Cloud Library's PostgreSQL database directly off `/cloudlib-postgres`, which exposes every stored Digital Product Passport and all account password hashes**
+- **Stealing the Data Protection key ring from `/cloudlib-dpkeys`**, which would let an attacker forge a valid Cloud Library authentication cookie for any account without ever knowing a password
 - **Inferring production volumes, energy use and product composition from stored passports.**
 - **Reading the whole production hierarchy and its history through the i3X API**, which is designed to make exactly that convenient
 - **Extracting the plant's structure and history through UA Cloud AI in natural language**, which lowers the skill needed to do so — no Flux, no OPC UA knowledge and no API familiarity are required

@@ -3341,6 +3341,19 @@ spec:
             - name: ServicePassword
               value: "${IOT_PASSWORD}"
             # EmailSenderAPIKey is intentionally NOT set - see the note above.
+            # Where the ASP.NET Core Data Protection key ring is stored. These keys
+            # encrypt the auth cookie, the antiforgery token on every form, and the
+            # password-reset tokens. By default the server writes them to its own
+            # working directory, which is destroyed on every restart - so a redeploy
+            # signs everyone out AND makes the login form's antiforgery token
+            # undecryptable, which is rejected before the password is even checked
+            # and looks exactly like a wrong password. Persisting them to the
+            # hostPath below keeps logins working across restarts and upgrades.
+            - name: DATA_PROTECTION_KEY_PATH
+              value: "/dpkeys"
+          volumeMounts:
+            - name: dpkeys
+              mountPath: /dpkeys
           readinessProbe:
             httpGet:
               path: /
@@ -3354,6 +3367,15 @@ spec:
               port: http
             initialDelaySeconds: 60
             periodSeconds: 20
+      volumes:
+        # The key ring is secret material: it can decrypt every auth cookie this
+        # server issues. It lives on the node like the other hostPath volumes in
+        # this solution, and inherits the same caveat - anyone with node access can
+        # read it. See the STRIDE section in the README.
+        - name: dpkeys
+          hostPath:
+            path: /cloudlib-dpkeys
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
