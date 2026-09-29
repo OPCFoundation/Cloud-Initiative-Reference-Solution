@@ -3338,9 +3338,61 @@ spec:
             # what UA Data Processor authenticates with below.
             - name: ServiceUsername
               value: "${IOT_USERNAME}"
+            # REQUIRED. Without it the server still starts, but every admin login
+            # is rejected in a way that looks exactly like a wrong password.
             - name: ServicePassword
               value: "${IOT_PASSWORD}"
             # EmailSenderAPIKey is intentionally NOT set - see the note above.
+            # --- Digital Product Passport signing (REQUIRED outside Development) ---
+            # The server REFUSES TO START without an economic operator id and a
+            # signing key: it would otherwise sign credentials asserting whichever
+            # operator a hosted passport happens to name.
+            #
+            # EconomicOperatorId is the operator this deployment signs for, and
+            # signing is REFUSED for any passport naming a different one. The
+            # comparison is StringComparison.Ordinal - exact and case-sensitive -
+            # so this must match byte-for-byte what UA Data Processor writes into
+            # the passport (PCFProcessor.cs and BatteryPassV6Values.json, both
+            # "i=6"). Change them together or passport signing stops working.
+            - name: Dpp__Esdc__EconomicOperatorId
+              value: "urn:uacl:opcfoundation"
+            # This demo lets the server generate its own signing key and keep it in
+            # PostgreSQL, which avoids handling a private key in the manifest. That
+            # is explicitly for development and evaluation ONLY: the key is stored
+            # unencrypted in a database on a hostPath volume, and passports signed
+            # with it carry no externally verifiable provenance.
+            #
+            # For anything real, remove this and supply a PKCS#8 PEM key from a
+            # secret store instead:
+            #   - name: Dpp__Esdc__PrivateKeyPem
+            #     valueFrom:
+            #       secretKeyRef: { name: cloudlib-esdc, key: private-key-pem }
+            - name: Dpp__Esdc__AllowGeneratedSigningKey
+              value: "true"
+            # --- DPP audit log ---
+            # Without an HMAC key the audit chain is integrity-checked but NOT
+            # tamper-evident: anyone who can write to PostgreSQL could rewrite
+            # history and recompute the hashes. Generate a real key with
+            #   openssl rand -base64 32
+            # and move it into a Secret before relying on the audit trail.
+            #
+            # - name: Dpp__Audit__HmacKey
+            #   valueFrom:
+            #     secretKeyRef: { name: cloudlib-dpp-audit, key: hmac-key }
+            # --- Reverse proxy ---
+            # This pod is ClusterIP-only and reachable solely through the Traefik
+            # ingress, so it is safe to honour X-Forwarded-For / X-Forwarded-Proto
+            # from the proxy. Without this the server sees the ingress pod's IP for
+            # every caller: the per-IP DPP rate limit collapses into one shared
+            # bucket, and the login redirect is built from the wrong scheme and
+            # downgrades to http://.
+            #
+            # TrustAllProxies is acceptable ONLY because of that ClusterIP
+            # isolation - expose this service directly and a caller could spoof
+            # their own client IP and scheme. If you ever do, replace this with
+            # Dpp__ForwardedHeaders__KnownProxies__0 naming the ingress address.
+            - name: Dpp__ForwardedHeaders__TrustAllProxies
+              value: "true"
             # Where the ASP.NET Core Data Protection key ring is stored. These keys
             # encrypt the auth cookie, the antiforgery token on every form, and the
             # password-reset tokens. By default the server writes them to its own
