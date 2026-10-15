@@ -18,7 +18,7 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [Where Each Web Service Can Be Accessed](#where-each-web-service-can-be-accessed)
   - [Where Telemetry Data Is Persisted](#where-telemetry-data-is-persisted)
   - [Updating the Container Images](#updating-the-container-images)
-- [Uninstalling]
+- [Uninstalling](#uninstalling)
   - [Remove the Stack, Keep K3s](#remove-the-stack-keep-k3s)
   - [Remove the Persisted Data Too](#remove-the-persisted-data-too)
   - [Remove K3s Itself](#remove-k3s-itself)
@@ -489,7 +489,13 @@ kubectl get nodes -A
    All pods should reach `Running`/`Ready`, and each `LoadBalancer` Service should
    receive an `EXTERNAL-IP` (the node's IP).
 
-   the traefik external IP address>"]}}'.
+   If the external IP address for some Kubernetes services shows as `<pending>`,
+   use the following command to assign the external IP address of the traefik
+   service:
+
+   ```bash
+   sudo kubectl patch service <theService> -n <namespace> -p '{"spec": {"type": "LoadBalancer", "externalIPs":["<the traefik external IP address>"]}}'
+   ```
 
    ### Where Each Web Service Can Be Accessed
 
