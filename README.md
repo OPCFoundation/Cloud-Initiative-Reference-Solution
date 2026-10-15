@@ -15,9 +15,10 @@ OPC Foundation Cloud Initiative Open-Source Reference Solution
   - [Install K3s](#install-k3s)
     - [Prerequisite: enable memory cgroups (Raspberry Pi only)](#prerequisite-enable-memory-cgroups-raspberry-pi-only)
   - [Apply the Stack Manifests](#apply-the-stack-manifests)
+  - [Where Each Web Service Can Be Accessed](#where-each-web-service-can-be-accessed)
   - [Where Telemetry Data Is Persisted](#where-telemetry-data-is-persisted)
   - [Updating the Container Images](#updating-the-container-images)
-- [Uninstalling](#uninstalling)
+- [Uninstalling]
   - [Remove the Stack, Keep K3s](#remove-the-stack-keep-k3s)
   - [Remove the Persisted Data Too](#remove-the-persisted-data-too)
   - [Remove K3s Itself](#remove-k3s-itself)
@@ -488,9 +489,32 @@ kubectl get nodes -A
    All pods should reach `Running`/`Ready`, and each `LoadBalancer` Service should
    receive an `EXTERNAL-IP` (the node's IP).
 
-   If the external IP address for some Kubernetes services shows as `<pending>`, use the following command to assign the external IP address of the traefik service: sudo kubectl patch service <theService> -p '{"spec": {"type": "LoadBalancer", "externalIPs":["<the traefik external IP address>"]}}'.
+   the traefik external IP address>"]}}'.
 
-### Where Telemetry Data Is Persisted
+   ### Where Each Web Service Can Be Accessed
+
+   Once the pods are running, the web services are reachable at the addresses
+   below. The `*.plant.local` hostnames are served over HTTPS through the ingress
+   and must resolve to the device (see the hosts-file note above); replace
+   `<device-ip>` with the device's IP address. Unless noted otherwise, log in with
+   the `IOT_USERNAME` / `IOT_PASSWORD` you chose.
+
+   | Service | Address | Namespace |
+   |---------|---------|-----------|
+   | UA Edge Translator | `https://translator.plant.local` | `edge` |
+   | UA Cloud Publisher | `https://publisher.plant.local` | `edge` |
+   | UA Cloud Action | `https://cloudaction.plant.local` | `cloud` |
+   | UA Cloud Library | `https://cloudlibrary.plant.local` (register an account first) | `cloud` |
+   | i3X for InfluxDB | `https://i3x.plant.local/swagger` | `cloud` |
+   | UA Cloud AI (MCP) | `https://cloudai.plant.local/mcp` (health: `/health`) | `cloud` |
+   | InfluxDB | `http://<device-ip>:8086` | `cloud` |
+   | Grafana | `http://<device-ip>:3000` | `cloud` |
+   | MQTT Explorer | `http://<device-ip>:4000` (no authentication) | `cloud` |
+   | Portainer | `https://<device-ip>:9443` (set admin password on first visit) | `cloud` |
+
+   For details on each service, see [Accessing the Web UIs](#accessing-the-web-uis).
+
+   ### Where Telemetry Data Is Persisted
 
 The ingested OPC UA telemetry is stored by **InfluxDB** in the `mqtt` bucket. That
 database is backed by a Kubernetes `hostPath` volume, so the data lives directly
@@ -1452,6 +1476,22 @@ Digital Product Passport the processor has produced.
 Register under any other name (an email address, a different spelling) and the
 library will look **empty**, even though the DPPs are stored and the uploads
 are succeeding.
+
+> ⚠️ **Restart UA Data Processor after registering.** UA Data Processor
+> authenticates against the Cloud Library as `IOT_USERNAME`, and that account
+> does not exist until you register it. Once you have registered, restart
+> the processor so it signs in with the new account:
+>
+> ```sh
+> kubectl rollout restart deployment/ua-dataprocessor -n cloud
+> kubectl rollout status deployment/ua-dataprocessor -n cloud
+> ```
+>
+> Then check that it is uploading DPPs successfully:
+>
+> ```sh
+> kubectl logs -f deployment/ua-dataprocessor -n cloud
+> ```
 
 ## UA Data Processor (PCF and Battery Passport)
 

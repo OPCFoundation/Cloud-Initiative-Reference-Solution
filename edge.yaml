@@ -27,33 +27,7 @@ spec:
       nodeSelector:
         "kubernetes.io/os": linux
       initContainers:
-      # The UA Edge Translator image runs as the non-root "app" user (USER app in
-      # its Dockerfile), but the /translator/* hostPath volumes are created by
-      # kubelet as root:root 0755. Without this the server cannot write its OPC UA
-      # application certificate into /app/pki, so the OPC UA listener never starts
-      # on 4840 - while the ASP.NET process stays alive and the pod misleadingly
-      # reports 1/1 Running. Chown by NAME so we do not depend on the numeric UID.
-      - name: init-chown-data
-        image: ghcr.io/opcfoundation/ua-edgetranslator:main
-        imagePullPolicy: IfNotPresent
-        securityContext:
-          runAsUser: 0
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            set -e
-            chown -R app:app /app/settings /app/nodesets /app/pki /app/logs
-            echo "Ownership of the translator hostPath volumes fixed"
-        volumeMounts:
-        - name: "settings"
-          mountPath: "/app/settings"
-        - name: "nodesets"
-          mountPath: "/app/nodesets"
-        - name: "pki"
-          mountPath: "/app/pki"
-        - name: "logs"
-          mountPath: "/app/logs"
-      # Wait for the simulated Modbus device so the Thing Description can be
+      # Wait for
       # onboarded successfully on the very first startup pass. The wait is BOUNDED:
       # the simulator is only a demo asset, so it must never permanently block the
       # Edge Translator (and, transitively, the Cloud Publisher). If it is not up in
@@ -84,16 +58,43 @@ spec:
             else
               echo "modbus-simulator.jsonld already present; leaving existing asset untouched"
             fi
-            # This container runs as root, so anything it just copied is root-owned.
-            # The translator runs as the non-root "app" user (UID/GID 1000 in the
-            # .NET base image) and must be able to rewrite its asset files.
-            chown -R 1000:1000 /app/settings
+            # Ownership is fixed afterwards by init-chown-data (by user NAME), so do
+            # not chown to a hardcoded UID here: newer .NET base images use UID 1654
+            # for "app", and chowning to 1000 left /app/settings unwritable.
         volumeMounts:
         - name: "settings"
           mountPath: "/app/settings"
         - name: "thing-descriptions"
           mountPath: "/seed"
-      # UA Edge Translator loads its southbound protocol drivers (Modbus, BACnet,
+      # The UA Edge Translator image runs as the non-root "app" user (USER app in
+      # its Dockerfile), but the /translator/* hostPath volumes are created by
+      # kubelet as root:root 0755, and the seeding step above writes as root.
+      # Without this the server cannot write its PKI or create subfolders such as
+      # /app/settings/wot-registry. Runs AFTER seeding and chowns by NAME so we do
+      # not depend on the image's numeric UID (1654 in current .NET images).
+      - name: init-chown-data
+        image: ghcr.io/opcfoundation/ua-edgetranslator:main
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -e
+            mkdir -p /app/settings/wot-registry
+            chown -R app:app /app/settings /app/nodesets /app/pki /app/logs
+            chmod -R u+rwX /app/settings /app/nodesets /app/pki /app/logs
+            echo "Ownership of the translator hostPath volumes fixed"
+        volumeMounts:
+        - name: "settings"
+          mountPath: "/app/settings"
+        - name: "nodesets"
+          mountPath: "/app/nodesets"
+        - name: "pki"
+          mountPath: "/app/pki"
+        - name: "logs"
+          mountPath: "/app/logs"
+      # UA Edge Translator loads
       # OPC UA, MQTT, S7, EtherNet/IP, ...) as plain .NET assemblies from
       # /app/drivers. They ship in a separate image so the driver pack can be
       # revved independently of the server. Without this the translator starts
