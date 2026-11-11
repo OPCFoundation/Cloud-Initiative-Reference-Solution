@@ -3574,7 +3574,7 @@ spec:
             - "until nc -z influxdb 8086; do echo waiting for influxdb; sleep 5; done"
       containers:
         - name: i3x4influx
-          image: ghcr.io/barnstee/i3x4influx:main
+          image: ghcr.io/opcfoundation/ua-cloudinitiative-i3x4influx:main
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -3704,7 +3704,7 @@ spec:
             - "until nc -z i3x4influx 8084 && nc -z ua-cloudaction 8082; do echo waiting for backends; sleep 5; done"
       containers:
         - name: ua-cloudai
-          image: ghcr.io/barnstee/ua-cloudai:main
+          image: ghcr.io/opcfoundation/ua-cloudinitiative-cloudai:main
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000

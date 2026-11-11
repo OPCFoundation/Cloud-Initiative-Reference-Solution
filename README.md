@@ -228,8 +228,8 @@ end-to-end pipeline from industrial protocols to a time-series database.
 | **ua-cloudlibrary** | `cloud` | `ghcr.io/opcfoundation/ua-cloudlibrary:latest` | 8083 (ClusterIP; HTTPS via ingress) |
 | **cloudlib-postgres** | `cloud` | `postgres:17.6-alpine` | 5432 (ClusterIP only) |
 | **ua-dataprocessor** | `cloud` | `ghcr.io/opcfoundation/ua-dataprocessor:main` | — |
-| **i3x4influx** | `cloud` | `ghcr.io/barnstee/i3x4influx:main` | 8084 (ClusterIP; HTTPS via ingress) |
-| **ua-cloudai** | `cloud` | `ghcr.io/barnstee/ua-cloudai:main` | 5050 (ClusterIP; HTTPS via ingress) |
+| **i3x4influx** | `cloud` | `ghcr.io/opcfoundation/ua-cloudinitiative-i3x4influx:main` | 8084 (ClusterIP; HTTPS via ingress) |
+| **ua-cloudai** | `cloud` | `ghcr.io/opcfoundation/ua-cloudinitiative-cloudai:main` | 5050 (ClusterIP; HTTPS via ingress) |
 | **portainer** | `cloud` | `portainer/portainer-ce:2.44.0` | **9443 (HTTPS UI)**, 9000, 8000 |
 
 **What each component does**
@@ -1728,7 +1728,7 @@ printf '%s' "$IOT_USERNAME:$IOT_PASSWORD" | base64
 >
 > On a locked-down or air-gapped network, avoid `npx` entirely by running
 > UA Cloud AI **locally in stdio mode** instead of bridging to the cluster — see
-> the [UA-CloudAI README](https://github.com/barnstee/UA-CloudAI), which shows a
+> the [UA-CloudAI README](https://github.com/OPCFoundation/UA-CloudInitiative-CloudAI), which shows a
 > `claude_desktop_config.json` that launches the binary directly.
 
 ### Trying it without an AI client
